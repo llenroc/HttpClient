@@ -1,0 +1,82 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{187C7ECF-0337-4814-99CB-FEA5DABF5965}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>Yamool.Net.Http</RootNamespace>
+    <AssemblyName>Yamool.Http</AssemblyName>
+    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <TargetFrameworkProfile />
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Data" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Channel\ChannelEventArgs.cs" />
+    <Compile Include="Channel\ITcpChannel.cs" />
+    <Compile Include="Channel\SecureTcpChannel.cs" />
+    <Compile Include="Channel\TcpChannel.cs" />
+    <Compile Include="Exception\HttpException.cs" />
+    <Compile Include="Exception\HttpExceptionStatus.cs" />
+    <Compile Include="Exception\NotSupportProtocolException.cs" />
+    <Compile Include="Exception\ProtocolViolationException.cs" />
+    <Compile Include="Header\HttpHeaderExtensions.cs" />
+    <Compile Include="Header\HttpHeaders.cs" />
+    <Compile Include="Header\HttpResponseHeaders.cs" />
+    <Compile Include="Header\KnownHeaderNames.cs" />
+    <Compile Include="Header\HttpRequestHeaders.cs" />
+    <Compile Include="HttpEncoder.cs" />
+    <Compile Include="HttpMethod.cs" />
+    <Compile Include="HttpRequest.cs" />
+    <Compile Include="HttpRequestExtensions.cs" />
+    <Compile Include="HttpRequestState.cs" />
+    <Compile Include="HttpResponse.cs" />
+    <Compile Include="HttpResponseStatus.cs" />
+    <Compile Include="HttpStatusCode.cs" />
+    <Compile Include="HttpUtils.cs" />
+    <Compile Include="HttpValueCollection.cs" />
+    <Compile Include="IO\ChunkedStream.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="IO\ContentLengthStream.cs" />
+    <Compile Include="IO\RequestStream.cs" />
+    <Compile Include="IO\ResponseStream.cs" />
+    <Compile Include="ResponseLeaveStream.cs" />
+    <Compile Include="StringEscapeUtils.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
+       Other similar extension points exist, see Microsoft.Common.targets.
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+  -->
+</Project>

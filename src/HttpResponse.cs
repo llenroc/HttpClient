@@ -55,7 +55,7 @@ namespace Yamool.Net.Http
             }
             if (decompressionMethod != DecompressionMethods.None)
             {
-                if ((text = _headers[HttpHeaderNames.TransferEncoding]) != null)
+                if ((text = _headers[HttpHeaderNames.ContentEncoding]) != null)
                 {
                     if ((decompressionMethod & DecompressionMethods.GZip) == DecompressionMethods.GZip && text.IndexOf(HttpRequest.GZipHeader, 0, StringComparison.OrdinalIgnoreCase) >= 0)
                     {

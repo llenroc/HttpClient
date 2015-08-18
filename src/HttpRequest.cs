@@ -60,14 +60,13 @@ namespace Yamool.Net.Http
         private long _startTimestamp;
         private ServicePoint _servicePoint;
         private bool _redirectedToDifferentHost;
-        private CancellationTokenSource _pendingRequestCts;      
         private int _totalResponseHeadersLength;
         private int _statusState;
         private ReadState _readState;
         private StatusLineValues _statusLineValues;
         private HttpResponseHeaders _responseHeaders;
         private Stream _connectStream;
-        private ConnectionReadWriteAwaitable _connection;
+        private Connection _connection;
 
         public HttpRequest(Uri uri) : this(HttpMethod.Get, uri, HttpVersion.HTTP11) { }
 
@@ -90,8 +89,7 @@ namespace Yamool.Net.Http
             _version = version;
             _sendChunked = false;
             _headers = new HttpRequestHeaders();
-            _startTimestamp = DateTime.UtcNow.Ticks;
-            _pendingRequestCts = new CancellationTokenSource();
+            _startTimestamp = DateTime.UtcNow.Ticks;          
         }
 
         #region Properties
@@ -528,7 +526,7 @@ namespace Yamool.Net.Http
             {
                 throw new InvalidOperationException("This HTTP request has been submitted.");
             }
-            var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(_pendingRequestCts.Token, requestCancellationToken);
+            var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(requestCancellationToken);
             this.SetTimeout(linkedCts);
             var servicePoint = this.FindServicePoint(false);
             await this.BeginSubmitRequestAsync(servicePoint, content, linkedCts.Token);
@@ -602,16 +600,6 @@ namespace Yamool.Net.Http
                 }
                 var transferredData = _connection.TransferredBytes;              
                 var bytesScanned = 0;           
-                //if (readedBuffer != null && readedBuffer.Length > 0)
-                //{
-                //    //merge two buffer into one
-                //    bytesRead += readedBuffer.Length;
-                //    var newBuffer = new byte[bytesRead];
-                //    Buffer.BlockCopy(readedBuffer, 0, newBuffer, 0, readedBuffer.Length);
-                //    Buffer.BlockCopy(transferredData.Array, transferredData.Offset, newBuffer, readedBuffer.Length, bytesRead);
-                //    transferredData = new ArraySegment<byte>(newBuffer);
-                //    readedBuffer = null;
-                //}
                 var parseStatus = this.ParseResponseData(transferredData, ref bytesScanned, ref requestDone);
                 if (parseStatus == DataParseStatus.Invalid || parseStatus == DataParseStatus.DataTooBig)
                 {
@@ -635,8 +623,6 @@ namespace Yamool.Net.Http
                         }
                         var nextReadCount = _connection.MoveBufferBytesToHead(bytesScanned, unparsedDataSize);
                         _connection.SetBuffer(unparsedDataSize, nextReadCount);
-                        //readedBuffer = new byte[unparsedDataSize];
-                        //Buffer.BlockCopy(transferredData.Array, transferredData.Offset + bytesScanned, readedBuffer, 0, unparsedDataSize);
                     }
                 }
                 else

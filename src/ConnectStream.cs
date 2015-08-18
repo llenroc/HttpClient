@@ -13,7 +13,7 @@ namespace Yamool.Net.Http
     /// </summary>
     internal class ConnectStream : Stream
     {
-        private readonly ConnectionReadWriteAwaitable _connection;
+        private readonly Connection _connection;
         private readonly HttpRequest _request;
         private volatile bool _disposed;    
         private readonly bool _chunked; 
@@ -24,7 +24,7 @@ namespace Yamool.Net.Http
         private bool _chunkEofRecvd;
         private ChunkParser _chunkParser;
 
-        public ConnectStream(ConnectionReadWriteAwaitable connection, ArraySegment<byte> buffer, int offset, int bufferCount, long readCount, bool chunked, HttpRequest request)
+        public ConnectStream(Connection connection, ArraySegment<byte> buffer, int offset, int bufferCount, long readCount, bool chunked, HttpRequest request)
         {
             _connection = connection;
             _readBytes = readCount;

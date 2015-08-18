@@ -77,7 +77,7 @@ namespace Yamool.Net.Http
                 ((IDisposable)this.UserToken).Dispose();
                 this.UserToken = null;
             }
-            _completedCallback = null;
+            _completedCallback = null;            
         }
 
         protected override void OnCompleted(SocketAsyncEventArgs e)

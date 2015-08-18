@@ -26,7 +26,7 @@ namespace Yamool.Net.Http
         private static bool[] tokenChars;
 
         private ReadState _readState;
-        private ConnectionReadWriteAwaitable _connection;
+        private Connection _connection;
         private ArraySegment<byte> _buffer;
         private int _bufferCurrentPos;
         private int _bufferFillLength;
@@ -59,7 +59,7 @@ namespace Yamool.Net.Http
             tokenChars[125] = false;
         }
 
-        public ChunkParser(ConnectionReadWriteAwaitable connection,ArraySegment<byte> initialBuffer, int initialBufferOffset, int initialBufferCount)
+        public ChunkParser(Connection connection,ArraySegment<byte> initialBuffer, int initialBufferOffset, int initialBufferCount)
         {
             _connection = connection;
             _buffer = initialBuffer;

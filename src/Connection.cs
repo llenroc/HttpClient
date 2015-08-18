@@ -7,102 +7,157 @@ namespace Yamool.Net.Http
     using System.Net;
     using System.Net.Sockets;
     using System.Threading;
+    using System.Threading.Tasks;
+    using System.Runtime.CompilerServices;
 
     /// <summary>
     /// Represents a HTTP connection for HTTP transport. 
     /// </summary>
-    internal sealed class Connection : IDisposable
+    internal sealed class Connection
     {
-        private volatile bool _disposed;
-        private int _state;
-        private EndPoint _connectEndPoint;
-        private Socket _socket;
-        private ConnectionPool _connectionPool;
+        private readonly ConnectionGroup _connectionGorup;
+        private readonly PooledBuffer _buffer;
+        private readonly Saea _saea;
+        private readonly AsyncReadWrite _asyncReadWrite;
+        private readonly Socket _socket;
+        private bool _busy;
 
-        public Connection(ConnectionPool connectionPool, EndPoint remoteEP)
+        public Connection(ConnectionGroup connectionGroup)
         {
-            _connectionPool = connectionPool;
-            _connectEndPoint = remoteEP;
-            _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
+            _connectionGorup = connectionGroup;
+            _saea = SaeaPool.Default.GetSaea();
+            _buffer = BufferPool.Default.GetBuffer();
         }
 
-        /// <summary>
-        /// Gets the remote endpoint which client is connected to this.
-        /// </summary>
-        public EndPoint RemoteEndPoint
+        public PooledBuffer Buffer
+        {
+            get;
+            private set;
+        }
+
+        public bool Busy
         {
             get
             {
-                return _connectEndPoint;
+                return _busy;
             }
         }
 
-        /// <summary>
-        /// Indicates this connection is active now.
-        /// </summary>
-        public bool IsActive
+        public ServicePoint ServicePoint
         {
             get
             {
-                return _state == 1;
+                return _connectionGorup.ServicePoint;
             }
         }
 
-        /// <summary>
-        /// The socket object to communication.
-        /// </summary>
-        public Socket Socket
+        internal bool CanReuse
         {
             get
             {
-                return _socket;
+                return _socket.Poll(0, SelectMode.SelectRead) == false;
             }
         }
 
-        public bool MakeAsActive()
+        public void SetBuffer(int offset, int count)
         {
-            return Interlocked.Exchange(ref _state, 1) == 0;
+            if (offset < 0 || offset < _buffer.Offset)
+            {
+                throw new ArgumentOutOfRangeException("offset");
+            }
+            if (count < 0 || offset + count > _buffer.Length)
+            {
+                throw new ArgumentOutOfRangeException("count");
+            }
+            _saea.SetBuffer(_buffer.Array, offset, count);
         }
 
-        public bool MakeInActive()
-        {
-            return Interlocked.Exchange(ref _state, 0) == 1;
+        public async Task<ArraySegment<Byte>> ReadAsync()
+        {            
+            await _asyncReadWrite.Read();
+            var offset = _buffer.Offset;
+            return new ArraySegment<byte>(_buffer.Array, _buffer.Offset, (_saea.Offset - _buffer.Offset) + _saea.BytesTransferred);
         }
 
-        internal void IOCompleted(Saea saea)
+        public async Task<int> WriteAsync()
         {
-            if (saea.SocketError != SocketError.Success)
-            {
-                this.Close(false);
-                return;
-            }
-            if (saea.LastOperation == SocketAsyncOperation.Connect)
-            {
-                _connectionPool.ServicePoint.CompletedConnection(_socket);
-            }
+            await _asyncReadWrite.Write();
+            return _saea.BytesTransferred;
         }
 
-        public void Close(bool reuse)
+        internal void CloseOnIdle()
         {
-            if (reuse)
-            {
+            throw new NotImplementedException();
+        }
 
-            }
-            else
+        private class AsyncReadWrite : INotifyCompletion
+        {
+            private static readonly Action Sentinal = () => { };
+            private Action _continuation;
+            private readonly Saea _saea;
+            private bool _completed;
+            private Socket _socket;
+
+            public AsyncReadWrite(Socket socket, Saea saea)
             {
-                if (_socket.Connected)
+                _socket = socket;
+                _saea = saea;
+                _saea.OnCompleted(_ =>
                 {
-                    _socket.Shutdown(SocketShutdown.Both);
-                    _socket.Close();
+                    var previous = _continuation ?? Interlocked.CompareExchange(ref _continuation, Sentinal, null);
+                    if (previous != null)
+                    {
+                        previous();
+                    }
+                });
+            }
+
+            public bool IsCompleted
+            {
+                get
+                {
+                    return _completed;
                 }
             }
-        }
 
-        public void Dispose()
-        {
-            this.Close(false);
-            _disposed = true;
-            GC.SuppressFinalize(this);
+            public void GetResult()
+            {
+                if (_saea.SocketError != SocketError.Success)
+                {
+                    throw new HttpRequestException("Occurring an exception during the HTTP request operations.Error:" + _saea.SocketError);
+                }
+            }
+
+            public AsyncReadWrite GetAwaiter()
+            {
+                return this;
+            }
+
+            public AsyncReadWrite Read()
+            {
+                if (!_socket.ReceiveAsync(_saea))
+                {
+                    _completed = true;
+                }
+                return this;
+            }
+
+            public AsyncReadWrite Write()
+            {
+                if (!_socket.SendAsync(_saea))
+                {
+                    _completed = true;
+                }
+                return this;
+            }
+
+            void INotifyCompletion.OnCompleted(Action continuation)
+            {
+                if (_continuation == Sentinal || Interlocked.CompareExchange(ref _continuation, continuation, null) == Sentinal)
+                {
+                    Task.Run(continuation);
+                }
+            }
         }
     }
 }

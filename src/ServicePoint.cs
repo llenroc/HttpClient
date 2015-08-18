@@ -239,7 +239,18 @@ namespace Yamool.Net.Http
 
         internal void SubmitRequest(HttpRequest request, string connName = null)
         {
-            throw new NotImplementedException();
+            ConnectionGroup connGroup;            
+            lock (this)
+            {               
+                connGroup = this.FindConnectionGroup(connName, false);
+            }
+            var forcedsubmit = false;
+            var connection = connGroup.FindConnection(request, connName, out forcedsubmit);            
+            if (connection == null)
+            {
+                //this request was aborted.
+                return;
+            }            
         }
 
         internal void SetCertificates(X509Certificate client, X509Certificate server)

@@ -21,6 +21,8 @@ namespace Yamool.Net.Http
         private readonly AsyncReadWrite _asyncReadWrite;
         private readonly Socket _socket;
         private bool _busy;
+        private bool _idle = true;
+        private DateTime _idleSinceUtc;
 
         public Connection(ConnectionGroup connectionGroup)
         {
@@ -88,6 +90,15 @@ namespace Yamool.Net.Http
         internal void CloseOnIdle()
         {
             throw new NotImplementedException();
+        }
+
+        private void CheckIdle()
+        {
+            if (!_idle)
+            {
+                _idle = true;
+                this.ServicePoint.DecrementConnection();
+            }
         }
 
         private class AsyncReadWrite : INotifyCompletion

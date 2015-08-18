@@ -79,7 +79,7 @@ namespace Yamool.Net.Http
             }
         }
 
-        internal Connection FindConnection(HttpRequest request, out bool created)
+        internal Connection FindConnection(HttpRequest request, string connName, out bool created)
         {
             Connection newConnection = null;
             created = false;
@@ -91,7 +91,7 @@ namespace Yamool.Net.Http
                     {
                         continue;
                     }
-                    newConnection = currentConnection;                    
+                    newConnection = currentConnection;
                 }
                 if (!created)
                 {

@@ -138,6 +138,14 @@ namespace Yamool.Net.Http
             }
         }
 
+        internal static TimerCallback IdleServicePointTimeoutDelegate
+        {
+            get
+            {
+                return _IdleServicePointTimeoutDelegate;
+            }
+        }
+
         /// <summary>
         /// Enables or disables the keep-alive option on a TCP connection.
         /// </summary>
@@ -200,12 +208,14 @@ namespace Yamool.Net.Http
             }, false)).Value;
         }
 
-        internal static bool RemoveIdleServicePoint(ServicePoint servicePoint)
+        internal static void _IdleServicePointTimeoutDelegate(object state)
         {
+            var servicePoint = (ServicePoint)state;
             Lazy<ServicePoint> idleServicePoint = null;
-            _servicePoints.TryRemove(servicePoint.LookupString, out idleServicePoint);
-            servicePoint.ReleaseAllConnectionGroups();
-            return true;
+            if (_servicePoints.TryRemove(servicePoint.LookupString, out idleServicePoint))
+            {
+                servicePoint.ReleaseAllConnectionGroups();
+            }
         }
 
         private static string MakeQueryString(Uri address)

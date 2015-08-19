@@ -22,6 +22,7 @@ namespace Yamool.Net.Http
             Data        // now read data
         }
 
+        private const string SP = " ";
         private const int RequestLineConstantSize = 12;
         internal const string GZipHeader = "gzip";
         internal const string DeflateHeader = "deflate";
@@ -67,6 +68,7 @@ namespace Yamool.Net.Http
         private HttpResponseHeaders _responseHeaders;
         private Stream _connectStream;
         private Connection _connection;
+        private CancellationToken _requestCancellationToken;
 
         public HttpRequest(Uri uri) : this(HttpMethod.Get, uri, HttpVersion.HTTP11) { }
 
@@ -147,7 +149,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return _pendingRequestCts.IsCancellationRequested;
+                return _requestCancellationToken.IsCancellationRequested;
             }
         }
 
@@ -489,7 +491,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return _servicePoint.InternalProxyServicePoint && _uri.Scheme != Uri.UriSchemeHttps;
+                return _servicePoint.UsesProxy && _uri.Scheme != Uri.UriSchemeHttps;
             }
         }
         #endregion
@@ -526,17 +528,21 @@ namespace Yamool.Net.Http
             {
                 throw new InvalidOperationException("This HTTP request has been submitted.");
             }
-            var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(requestCancellationToken);
-            this.SetTimeout(linkedCts);
+            if (_timeout != -1)
+            {
+                var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(requestCancellationToken);
+                linkedCts.CancelAfter(_timeout);
+                _requestCancellationToken = linkedCts.Token;
+            }            
             var servicePoint = this.FindServicePoint(false);
-            await this.BeginSubmitRequestAsync(servicePoint, content, linkedCts.Token);
+            await this.BeginSubmitRequestAsync(servicePoint, content);
             var responseData = new CoreResponseData(_statusLineValues, _responseHeaders, _connectStream);
             return new HttpResponse(_uri, _method, responseData, _automaticDecompression);
         }
 
-        private async Task BeginSubmitRequestAsync(ServicePoint servicePoint, HttpContent content, CancellationToken requestCancellationToken)
+        private async Task BeginSubmitRequestAsync(ServicePoint servicePoint, HttpContent content)
         {
-            _connection = servicePoint.SubmitRequest(requestCancellationToken);
+            _connection = servicePoint.SubmitRequest();
             try
             {
                 //Connect to the remote host
@@ -560,28 +566,14 @@ namespace Yamool.Net.Http
         }
 
         private async Task SubmitRequestAsync(HttpContent content = null)
-        {
-            //write a request headers
-            await WriteRequestHeadersAsync();
-            //post a content to connected connection.
+        {            
+            //write a request header to the connection that established connected.            
+            await this.WriteRequestHeadersAsync();
             if (_method.AllowRequestContent && content != null)
             {
                 await content.CopyToAsync(null);
             }
             await this.ReadResponseAsync();
-        }
-
-        private async Task WriteRequestHeadersAsync()
-        {
-            this.UpdateHeaders();
-            var bytesBuffer = this.SerializeHeaders();
-            var bytesWrite = 0;
-            var bytesCount = bytesBuffer.Length;
-            while (bytesWrite < bytesCount)
-            {
-                await _connection.WriteAsync(bytesBuffer, bytesWrite, bytesCount - bytesWrite);
-                bytesWrite += _connection.TransferredCount;
-            }
         }
 
         private async Task ReadResponseAsync()
@@ -1103,16 +1095,9 @@ namespace Yamool.Net.Http
             return false;
         }
 
-        private void SetTimeout(CancellationTokenSource cancellationTokenSource)
+        private async Task WriteRequestHeadersAsync()
         {
-            if (_timeout != -1)
-            {
-                cancellationTokenSource.CancelAfter(_timeout);
-            }
-        }
-
-        private byte[] SerializeHeaders()
-        {
+            this.UpdateHeaders();
             if (_httpWriteMode != HttpWriteMode.None)
             {
                 if (_httpWriteMode == HttpWriteMode.Chunked)
@@ -1159,31 +1144,36 @@ namespace Yamool.Net.Http
                 _headers.SetInternal(HttpHeaderNames.Connection, "Close");
             }
             var requestHeadersString = _headers.ToString();
-            //init begin length of bytes
-            var byteCount = requestHeadersString.Length;
-            var offset = 0;
-            byte[] writeBuffer = null;
+            string requestLine = null;
             if (this.UsesProxySemantics)
             {
-                // depending on whether, we have a proxy, generate a proxy or normal request
-                offset = this.GenerateProxyRequestLine(byteCount, ref writeBuffer);
+                requestLine = this.GenerateProxyRequestLine();
             }
             else
             {
-                // // default case for normal HTTP requests
-                offset = this.GenerateRequestLine(byteCount, ref writeBuffer);
+                requestLine = this.GenerateRequestLine();
             }
-            Buffer.BlockCopy(HttpBytes, 0, writeBuffer, offset, HttpBytes.Length);
-            offset += HttpBytes.Length;
-            writeBuffer[offset++] = (byte)'1';
+
+            var writeBufferCount = requestHeadersString.Length + requestLine.Length + 5;
+            var writeBuffer = new byte[writeBufferCount];
+            var offset = 0;
+            offset += Encoding.ASCII.GetBytes(requestLine, 0, requestLine.Length, writeBuffer, offset);
+            writeBuffer[offset++] = (byte)(_version == HttpVersion.HTTP20 ? '2' : '1');
             writeBuffer[offset++] = (byte)'.';
-            writeBuffer[offset++] = (byte)'1';
+            writeBuffer[offset++] = (byte)(_version == HttpVersion.HTTP20 ? '0' : '1');
             writeBuffer[offset++] = (byte)'\r';
             writeBuffer[offset++] = (byte)'\n';
-
-            var requestHeadersBytes = Encoding.UTF8.GetBytes(requestHeadersString);
-            Buffer.BlockCopy(requestHeadersBytes, 0, writeBuffer, offset, byteCount);
-            return writeBuffer;
+            Encoding.UTF8.GetBytes(requestHeadersString, 0, requestHeadersString.Length, writeBuffer, offset);
+            var leftWriteBytes = writeBufferCount;
+            var readIndex = 0;
+            while (leftWriteBytes > 0)
+            {
+                var count = Math.Min(writeBufferCount - readIndex, _connection.Buffer.Length);
+                Buffer.BlockCopy(writeBuffer, readIndex, _connection.Buffer.Array, _connection.Buffer.Offset, count);
+                var writeBytes = await _connection.WriteAsync();
+                leftWriteBytes -= writeBytes;
+                readIndex += writeBytes;
+            }
         }
 
         private void UpdateHeaders()
@@ -1223,41 +1213,22 @@ namespace Yamool.Net.Http
             return hostName;
         }
 
-        private int GenerateProxyRequestLine(int headersSize, ref byte[] writeBuffer)
+        private string GenerateProxyRequestLine()
         {
-            var offset = 0;
+            //
+            // Handle Proxy Case, i.e. "GET http://hostname-outside-of-proxy.somedomain.edu:999"
+            //
             var scheme = _uri.GetComponents(UriComponents.Scheme | UriComponents.KeepDelimiter, UriFormat.UriEscaped);
             var host = GetSafeHostAndPort(_uri);
             var path = _uri.GetComponents(UriComponents.Path | UriComponents.Query, UriFormat.UriEscaped);
-            var writeBufferLength = _method.Name.Length + scheme.Length + host.Length + path.Length + RequestLineConstantSize + headersSize;
-            writeBuffer = new byte[writeBufferLength];
-
-            //Method name
-            offset = Encoding.ASCII.GetBytes(_method.Name, 0, _method.Name.Length, writeBuffer, 0);
-            writeBuffer[offset++] = (byte)' ';
-            //scheme
-            offset += Encoding.ASCII.GetBytes(scheme, 0, scheme.Length, writeBuffer, offset);
-            //host
-            offset += Encoding.ASCII.GetBytes(host, 0, host.Length, writeBuffer, offset);
-            offset += host.Length;
-            //path
-            offset += Encoding.ASCII.GetBytes(path, 0, path.Length, writeBuffer, offset);
-            writeBuffer[offset++] = (byte)' ';
-            return offset;
+            //method + SP + scheme + host + path + SP
+            return string.Concat(_method.Name, SP, scheme, host, path, SP);
         }
 
-        private int GenerateRequestLine(int headersSize,ref byte[] writeBuffer)
+        private string GenerateRequestLine()
         {
-            var offset = 0;
             var pathAndQuery = _uri.PathAndQuery;
-            var writeBufferLength = _method.Name.Length + pathAndQuery.Length + RequestLineConstantSize + headersSize;
-            writeBuffer = new byte[writeBufferLength];
-            //Method Name
-            offset = Encoding.ASCII.GetBytes(_method.Name, 0, _method.Name.Length, writeBuffer, 0);
-            writeBuffer[offset++] = (byte)' ';
-            offset += Encoding.ASCII.GetBytes(pathAndQuery, 0, pathAndQuery.Length, writeBuffer, offset);
-            writeBuffer[offset++] = (byte)' ';
-            return offset;
+            return string.Concat(_method.Name, SP, pathAndQuery, SP);
         }
 
         private bool TryGetHostUri(string hostName, out Uri hostUri)

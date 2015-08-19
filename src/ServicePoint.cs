@@ -28,7 +28,7 @@ namespace Yamool.Net.Http
         private int _tcp_keepalive_time;
         private int _tcp_keepalive_interval;
         private readonly string _lookupString;
-        private Timer _idleTimer;
+        private Timer _expiringTimer;
         private DnsResolverHelper _dnsHelper;
         private Dictionary<string, ConnectionGroup> _groups;
 
@@ -160,9 +160,9 @@ namespace Yamool.Net.Http
                 //need a thread lock for this operation.
                 if (Interlocked.CompareExchange(ref _currentConnections, 0, 0) == 0)
                 {
-                    if (_idleTimer != null)
+                    if (_expiringTimer != null)
                     {
-                        _idleTimer.Change(_maxIdleTime, Timeout.Infinite);                        
+                        _expiringTimer.Change(_maxIdleTime, Timeout.Infinite);                        
                     }
                 }                
             }
@@ -266,11 +266,10 @@ namespace Yamool.Net.Http
         {
             if (Interlocked.Increment(ref _currentConnections) == 1)
             {
-               //cancel idle timer
-                if (_idleTimer != null)
+                if (_expiringTimer != null)
                 {
-                    _idleTimer.Dispose();
-                    _idleTimer = null;
+                    _expiringTimer.Dispose();
+                    _expiringTimer = null;
                 }
             }
         }
@@ -285,13 +284,7 @@ namespace Yamool.Net.Http
                 if (_currentConnections < 0)
                     Interlocked.Exchange(ref _currentConnections, 0);
                 _idleSince = DateTime.Now;
-                _idleTimer = new Timer(_ =>
-                {
-                    ServicePointManager.RemoveIdleServicePoint(this);
-                    _idleTimer.Dispose();
-                    _idleTimer = null;
-
-                }, null, _maxIdleTime, Timeout.Infinite);
+                _expiringTimer = new Timer(ServicePointManager.IdleServicePointTimeoutDelegate, this, _maxIdleTime, Timeout.Infinite);
             }
         }
 

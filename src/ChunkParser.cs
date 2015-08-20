@@ -29,7 +29,7 @@ namespace Yamool.Net.Http
         private Connection _connection;
         private ArraySegment<byte> _buffer;
         private int _bufferCurrentPos;
-        private int _bufferFillLength;
+        private int _bufferSize;
         private int _currentChunkLength;
         private int _currentChunkBytesRead;
 
@@ -64,16 +64,11 @@ namespace Yamool.Net.Http
             _connection = connection;
             _buffer = initialBuffer;
             _bufferCurrentPos = initialBufferOffset;
-            _bufferFillLength = initialBufferOffset + initialBufferCount;
+            _bufferSize = initialBufferOffset + initialBufferCount;
             _readState = ReadState.ChunkLength;
             _currentChunkLength = -1;
         }
-
-        public int Read(byte[] buffer, int offset, int count)
-        {
-            return this.ReadAsync(buffer, offset, count).GetAwaiter().GetResult();
-        }
-
+                
         public async Task<int> ReadAsync(byte[] buffer, int offset, int count)
         {
             var bytesToRead = 0;
@@ -124,7 +119,7 @@ namespace Yamool.Net.Http
                     case DataParseStatus.Invalid:
                     case DataParseStatus.DataTooBig:
                         {
-                            throw new IOException("net_io_readfailure,net_io_connectionclosed");
+                            throw new HttpResponseException("The chunked response parse error.", System.Net.WebExceptionStatus.ServerProtocolViolation);
                         }
                     case DataParseStatus.NeedMoreData:
                         {
@@ -146,10 +141,16 @@ namespace Yamool.Net.Http
             return bytesToRead;
         }
 
+        public async Task<ArraySegment<byte>> ReadNextBuffer()
+        {
+            var count = await this.ReadAsync(_connection.Buffer.Array, _connection.Buffer.Offset, _connection.Buffer.Length);
+            return new ArraySegment<byte>(_connection.Buffer.Array, _connection.Buffer.Offset, count);
+        }       
+
         private DataParseStatus ParseChunkLength()
         {
             var chunkLength = noChunkLength;
-            for (var i = _bufferCurrentPos; i < _bufferFillLength; i++)
+            for (var i = _bufferCurrentPos; i < _bufferSize; i++)
             {
                 var c = _buffer.Get(i);
                 if (((c < '0') || (c > '9')) && ((c < 'A') || (c > 'F')) && ((c < 'a') || (c > 'f')))
@@ -252,10 +253,10 @@ namespace Yamool.Net.Http
         private DataParseStatus HandlePayload(byte[] buffer, int offset, int count, ref int bytesReadCount)
         {
             // Try to fill the user buffer with data from the internal buffer first.
-            if (_bufferCurrentPos < _bufferFillLength)
+            if (_bufferCurrentPos < _bufferSize)
             {
                 // We have chunk body data in our internal buffer. Copy it to the user buffer.
-                bytesReadCount = Math.Min(Math.Min(count, _bufferFillLength - _bufferCurrentPos), _currentChunkLength - _currentChunkBytesRead);
+                bytesReadCount = Math.Min(Math.Min(count, _bufferSize - _bufferCurrentPos), _currentChunkLength - _currentChunkBytesRead);
                 Buffer.BlockCopy(_buffer.Array, _bufferCurrentPos, buffer, offset, bytesReadCount);
                 _bufferCurrentPos += bytesReadCount;
                 _currentChunkBytesRead += bytesReadCount;
@@ -269,7 +270,7 @@ namespace Yamool.Net.Http
                 }
                 return DataParseStatus.Done;
             }
-            if (_bufferCurrentPos == _bufferFillLength)
+            if (_bufferCurrentPos == _bufferSize)
             {
                 return DataParseStatus.NeedMoreData;
             }
@@ -279,7 +280,7 @@ namespace Yamool.Net.Http
         private DataParseStatus ParseWhitespaces(ref int pos)
         {
             var currentPos = pos;
-            while (currentPos < _bufferFillLength)
+            while (currentPos < _bufferSize)
             {
                 var c = _buffer.Get(currentPos);
                 if (!IsWhiteSpace(c))
@@ -354,7 +355,7 @@ namespace Yamool.Net.Http
         {
             const int crlfLength = 2;
 
-            if (pos + crlfLength > _bufferFillLength)
+            if (pos + crlfLength > _bufferSize)
             {
                 return DataParseStatus.NeedMoreData;
             }
@@ -370,7 +371,7 @@ namespace Yamool.Net.Http
 
         private DataParseStatus ParseToken(ref int pos)
         {
-            for (var currentPos = pos; currentPos < _bufferFillLength; currentPos++)
+            for (var currentPos = pos; currentPos < _bufferSize; currentPos++)
             {
                 if (!IsTokenChar(_buffer.Get(currentPos)))
                 {
@@ -392,7 +393,7 @@ namespace Yamool.Net.Http
 
         private DataParseStatus ParseQuotedString(ref int pos)
         {
-            if (pos == _bufferFillLength)
+            if (pos == _bufferSize)
             {
                 return DataParseStatus.NeedMoreData;
             }
@@ -401,7 +402,7 @@ namespace Yamool.Net.Http
                 return DataParseStatus.Invalid;
             }
             var currentPos = pos + 1;
-            while (currentPos < _bufferFillLength)
+            while (currentPos < _bufferSize)
             {
                 if ((_buffer.Get(currentPos) == '"'))
                 {
@@ -416,7 +417,7 @@ namespace Yamool.Net.Http
                 {
                     // We have a quoted pair. Make sure we have at least one more char in the buffer.
                     currentPos++;
-                    if (currentPos == _bufferFillLength)
+                    if (currentPos == _bufferSize)
                     {
                         return DataParseStatus.NeedMoreData;
                     }
@@ -437,24 +438,16 @@ namespace Yamool.Net.Http
 
         private async Task<bool> TryGetMoreDataAsync()
         {
-            //var unreadBytesSize = _bufferFillLength - _bufferCurrentPos;
-            //if (unreadBytesSize >= BufferPool.DefaultBufferLength)
-            //{
-            //    throw new IOException("unread bytes size exceeded the buffer length.");
-            //}
-            //if (unreadBytesSize > 0)
-            //{
-            //    _connection.MoveBufferBytesToHead(_bufferCurrentPos, unreadBytesSize);
-            //    _connection.SetBuffer(unreadBytesSize, _bufferFillLength - unreadBytesSize);
-            //}
-            //else
-            //{
-            //    _connection.ResetBuffer();
-            //}
-            //await _connection.ReadAsync();
-            // _buffer = _connection.TransferredBytes;
-            // _bufferFillLength = _connection.TransferredCount;
-            //_bufferCurrentPos = 0;
+            var leftBytes = _bufferSize - _bufferCurrentPos;
+            var readSize = _connection.Buffer.Length - leftBytes;
+            if (_readState == ReadState.ChunkLength)
+            {
+                readSize = Math.Min(12, readSize);
+            }
+            Buffer.BlockCopy(_buffer.Array, _bufferCurrentPos, _buffer.Array, _buffer.Offset, leftBytes);
+            _buffer = await _connection.ReadPooledBufferAsync(_buffer.Offset + leftBytes, readSize);
+            _bufferSize = _buffer.Count;
+            _bufferCurrentPos = 0;
             return true;
         }
 

@@ -576,14 +576,15 @@ namespace Yamool.Net.Http
             var requestDone = false;        
             var bytesScanned = 0;
             ArraySegment<byte> readBuffer = new ArraySegment<byte>();
+            var buffer_offset = connection.Buffer.Offset;
+            var buffer_length = connection.Buffer.Length;
             while (!requestDone)
             {
                 if (this.Aborted)
                 {
                     throw new OperationCanceledException("The request was canceled.");
                 }
-                connection.SetBuffer(connection.Buffer.Offset, connection.Buffer.Length);
-                readBuffer = await connection.ReadAsync();
+                readBuffer = await connection.ReadPooledBufferAsync(buffer_offset, buffer_length);
                 var bytesRead = readBuffer.Count;
                 if (bytesRead == 0)
                 {
@@ -610,12 +611,17 @@ namespace Yamool.Net.Http
                     {
                         if (unparsedDataSize >= BufferPool.DefaultBufferLength)
                         {
-                            throw new IOException("unparsed size exceeded the buffer length.");                            
+                            throw new IOException("unparsed size exceeded the buffer length.");
                         }
-                        //copy the left bytes
                         Buffer.BlockCopy(connection.Buffer.Array, bytesScanned, connection.Buffer.Array, connection.Buffer.Offset, unparsedDataSize);
-                        connection.SetBuffer(unparsedDataSize, connection.Buffer.Length - unparsedDataSize);
+                        buffer_offset = unparsedDataSize;
+                        buffer_length -= unparsedDataSize;
                     }
+                }
+                else
+                {
+                    buffer_length = connection.Buffer.Length;
+                    buffer_offset = connection.Buffer.Offset;
                 }
             }
             if (this.Redirect((HttpStatusCode)_statusLineValues.StatusCode))
@@ -1167,16 +1173,11 @@ namespace Yamool.Net.Http
             while (leftWriteBytes > 0)
             {
                 var count = Math.Min(writeBytesCount - beginReadIndex, connection.Buffer.Length);
-                if (usePooledBuffer)
+                if (!usePooledBuffer)
                 {
-                    connection.SetBuffer(connection.Buffer.Offset + beginReadIndex, count);
+                    Buffer.BlockCopy(writeBuffer, beginReadIndex, connection.Buffer.Array, connection.Buffer.Offset, count); 
                 }
-                else
-                {
-                    Buffer.BlockCopy(writeBuffer, beginReadIndex, connection.Buffer.Array, connection.Buffer.Offset, count);
-                    connection.SetBuffer(connection.Buffer.Offset, count);
-                }
-                var writeBytes = await connection.WriteAsync();
+                var writeBytes = await connection.WritePooledBufferAsync(connection.Buffer.Offset + beginReadIndex, count);          
                 leftWriteBytes -= writeBytes;
                 beginReadIndex += writeBytes;
             }

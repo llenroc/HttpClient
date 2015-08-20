@@ -23,8 +23,9 @@ namespace Yamool.Net.Http
         private long _readBytes;
         private bool _chunkEofRecvd;
         private ChunkParser _chunkParser;
+        private PooledBuffer _pooledBuffer;
 
-        public ConnectStream(Connection connection, ArraySegment<byte> buffer, int offset, int bufferCount, long readCount, bool chunked, HttpRequest request)
+        internal ConnectStream(Connection connection, ArraySegment<byte> buffer, int offset, int bufferCount, long readCount, bool chunked, HttpRequest request)
         {
             _connection = connection;
             _readBytes = readCount;
@@ -40,6 +41,7 @@ namespace Yamool.Net.Http
                 _readBufferSize = bufferCount;
             }
             _request = request;
+            _pooledBuffer = connection.Buffer;
         }
 
         public override bool CanRead
@@ -74,7 +76,7 @@ namespace Yamool.Net.Http
                 {
                     return _chunkEofRecvd;
                 }
-                return _readBytes == 0L;
+                return _readBytes == 0L || (_readBytes == -1L && _readBufferSize <= 0);
             }
         }
 
@@ -129,55 +131,90 @@ namespace Yamool.Net.Http
 
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
-            return 0;
-            //var leftBytes = _buffer.Count - _offset;
-           
-            //if (leftBytes > 0)
-            //{
-            //    count = Math.Min(count, leftBytes);
-            //    Buffer.BlockCopy(_buffer.Array, _offset, buffer, 0, count);
-            //    _offset += count;
-            //    return count;
-            //}
-            //_offset = 0;
-            //_buffer = await this.ReadBuffer();
-            //leftBytes = _buffer.Count - offset;
-            //if (leftBytes > 0)
-            //{
-            //    count = Math.Min(count, leftBytes);
-            //    Buffer.BlockCopy(_buffer.Array, _offset, buffer, 0, count);
-            //    _offset += count;
-            //    return count;
-            //}
-            //return 0;
-        }
-
-        public async Task<ArraySegment<byte>> ReadNext()
-        {
-            this.CheckDisposed();
-            if (_request.Aborted)
+            if (buffer == null)
+            {
+                throw new ArgumentNullException("buffer");
+            }
+            if (offset < 0 || offset > buffer.Length)
+            {
+                throw new ArgumentOutOfRangeException("offset");
+            }
+            if (count < 0 || count > buffer.Length - offset)
+            {
+                throw new ArgumentOutOfRangeException("count");
+            }
+            this.CheckCancelledOrDisposed();
+            if (cancellationToken.IsCancellationRequested)
             {
                 throw new OperationCanceledException("The request was canceled.");
             }
+            if (this.Eof)
+            {
+                return 0;
+            }
+            var bytesToRead = 0;
+            if (_chunked)
+            {
+                if (!_chunkEofRecvd)
+                {
+                    bytesToRead = await _chunkParser.ReadAsync(buffer, offset, count);
+                    if (bytesToRead == 0)
+                    {
+                        _chunkEofRecvd = true;
+                    }
+                    return bytesToRead;
+                }
+            }
+            count = Math.Min((int)_readBytes, count);
+            bytesToRead = this.FillFromBufferedData(buffer, offset, count);
+            if (bytesToRead > 0)
+            {
+                return bytesToRead;
+            }
+            return await _connection.ReadAsync(buffer, offset, count);
+        }
+
+        public async Task<ArraySegment<byte>> ReadNextBuffer()
+        {
+            this.CheckCancelledOrDisposed();
             if (this.Eof)
             {
                 return new ArraySegment<byte>();
             }
             if (_chunked)
             {
-
+                if (!_chunkEofRecvd)
+                {
+                    var buffer = await _chunkParser.ReadNextBuffer();
+                    if (buffer.Count == 0)
+                    {
+                        _chunkEofRecvd = true;
+                    }
+                    return buffer;
+                }
+            }            
+            if (_readBufferSize > 0)
+            {
+                //return a previous cached buffer
+                var bytesToRead = _readBufferSize;
+                _readBytes -= bytesToRead;
+                _readBufferSize -= bytesToRead;
+                return new ArraySegment<byte>(_readBuffer.Array, _readOffset, bytesToRead);
             }
-            var readData = new ArraySegment<byte>(_readBuffer.Array, _readOffset, _readBufferSize);
-            var readBytes = readData.Count;
+            return await _connection.ReadPooledBufferAsync();
+        }
+
+        private int FillFromBufferedData(byte[] buffer, int offset, int count)
+        {
             if (_readBufferSize == 0)
             {
-                _connection.SetBuffer(_connection.Buffer.Offset, _connection.Buffer.Length);
-                readData = await _connection.ReadAsync();
-                _readBufferSize = readData.Count;
+                return 0;
             }
-            _readBufferSize -= readData.Count;
-            _readBytes -= readData.Count;
-            return readData;
+            count = Math.Min(count, _readBufferSize);
+            Buffer.BlockCopy(_readBuffer.Array, _readBuffer.Offset, buffer, offset, count);
+            _readOffset += count;
+            _readBufferSize -= count;
+            return count;
         }
 
         protected override void Dispose(bool disposing)
@@ -190,11 +227,15 @@ namespace Yamool.Net.Http
             base.Dispose(disposing);
         }
 
-        private void CheckDisposed()
+        private void CheckCancelledOrDisposed()
         {
             if (_disposed)
             {
                 throw new ObjectDisposedException(base.GetType().FullName);
+            }
+            if (_request.Aborted)
+            {
+                throw new OperationCanceledException("The request was canceled.");
             }
         }
     }

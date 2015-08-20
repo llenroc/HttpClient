@@ -21,21 +21,18 @@ namespace Yamool.Net.Http.Tests
         {
             var watcher = new System.Diagnostics.Stopwatch();
             watcher.Start();
-            var request = new HttpRequest(new Uri("http://cn.bing.com"));
+            var request = new HttpRequest(new Uri("http://music.163.com/"));
             request.CookieContainer = new CookieContainer();
             var response = await request.SendAsync();
             var sum = 0;
             using (var stream = response.GetResponseStream())
             {
-                using (var buffer = BufferPool.Default.GetBuffer())
+                var buffer = new byte[2048];
+                var count = 0;
+                while ((count = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                 {
-                    var count = 0;
-
-                    while ((count = await stream.ReadAsync(buffer.Array, buffer.Offset, buffer.Length)) > 0)
-                    {
-                        sum += count;
-                        // Console.WriteLine(count);
-                    }
+                    sum += count;
+                    Console.WriteLine(count);
                 }
             }
             watcher.Stop();

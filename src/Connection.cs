@@ -61,12 +61,17 @@ namespace Yamool.Net.Http
 
         public async Task<bool> ConnectAsync()
         {
-            this.SetBuffer(0, 0);
+            _saea.SetBuffer(0, 0);
             await _asyncReadWrite.Connect(_servicePoint.HostEndPoint);
             return true;
         }
 
-        public void SetBuffer(int offset, int count)
+        public Task<ArraySegment<Byte>> ReadPooledBufferAsync()
+        {
+            return this.ReadPooledBufferAsync(_buffer.Offset, _buffer.Length); 
+        }
+
+        public async Task<ArraySegment<Byte>> ReadPooledBufferAsync(int offset, int count)
         {
             if (offset < 0 || offset < _buffer.Offset)
             {
@@ -77,17 +82,28 @@ namespace Yamool.Net.Http
                 throw new ArgumentOutOfRangeException("count");
             }
             _saea.SetBuffer(_buffer.Array, offset, count);
-        }
-
-        public async Task<ArraySegment<Byte>> ReadAsync()
-        {
             await _asyncReadWrite.Read();
-            var offset = _buffer.Offset;
             return new ArraySegment<byte>(_buffer.Array, _buffer.Offset, (_saea.Offset - _buffer.Offset) + _saea.BytesTransferred);
         }
 
-        public async Task<int> WriteAsync()
+        internal async Task<int> ReadAsync(byte[] buffer, int offset, int count)
         {
+            _saea.SetBuffer(buffer, offset, count);
+            await _asyncReadWrite.Read();
+            return _saea.BytesTransferred;
+        }
+
+        public async Task<int> WritePooledBufferAsync(int offset, int count)
+        {
+            if (offset < 0 || offset < _buffer.Offset)
+            {
+                throw new ArgumentOutOfRangeException("offset");
+            }
+            if (count < 0 || offset + count > _buffer.Length)
+            {
+                throw new ArgumentOutOfRangeException("count");
+            }
+            _saea.SetBuffer(_buffer.Array, offset, count);
             await _asyncReadWrite.Write();
             return _saea.BytesTransferred;
         }

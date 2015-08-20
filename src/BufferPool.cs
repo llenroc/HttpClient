@@ -7,7 +7,7 @@ namespace Yamool.Net.Http
     using System.Threading;
     using System.Collections.Concurrent;
 
-    internal class BufferPool
+    public class BufferPool
     {
         public const int DefaultBufferLength = 4096;
         private static Lazy<BufferPool> defaultBufferPool = new Lazy<BufferPool>(() => new BufferPool(1));
@@ -22,7 +22,7 @@ namespace Yamool.Net.Http
             _largeBuffer = new byte[bufferLength * numBuffer];
             for (var i = 0; i < numBuffer; i++)
             {
-                _queues.Push(new PooledBuffer(_largeBuffer, i * bufferLength, bufferLength, true));
+                _queues.Push(new PooledBuffer(this, _largeBuffer, i * bufferLength, bufferLength, true));
             }
         }
 
@@ -40,7 +40,7 @@ namespace Yamool.Net.Http
             if (!_queues.TryPop(out buffer))
             {
                 //no pooled
-                buffer = new PooledBuffer(new byte[4096], 0, 4096, false);
+                buffer = new PooledBuffer(this, new byte[4096], 0, 4096, false);
             }
             Interlocked.Increment(ref _activeCount);
             return buffer;
@@ -53,10 +53,13 @@ namespace Yamool.Net.Http
         }
     }
 
-    internal class PooledBuffer
+    public class PooledBuffer : IDisposable
     {
-        public PooledBuffer(byte[] buffer, int offset, int length, bool pooled = true)
+        private BufferPool _pool;
+
+        public PooledBuffer(BufferPool pool, byte[] buffer, int offset, int length, bool pooled = true)
         {
+            _pool = pool;
             this.Array = buffer;
             this.Offset = offset;
             this.Length = length;
@@ -94,6 +97,20 @@ namespace Yamool.Net.Http
         {
             get;
             private set;
+        }
+
+        public void Dispose()
+        {
+            if (this.IsPooled)
+            {
+                _pool.FreeBuffer(this);
+            }
+            else
+            {
+                this.Array = null;
+                this.Length = 0;
+                this.Offset = 0;
+            }
         }
     }
 }

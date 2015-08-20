@@ -13,9 +13,9 @@ namespace Yamool.Net.Http
     /// <summary>
     /// Represents a HTTP connection for HTTP transport. 
     /// </summary>
-    internal sealed class Connection
+    internal sealed class Connection : IDisposable
     {
-        private readonly ConnectionGroup _connectionGorup;
+        private readonly ServicePoint _servicePoint;
         private readonly PooledBuffer _buffer;
         private readonly Saea _saea;
         private readonly AsyncReadWrite _asyncReadWrite;
@@ -24,17 +24,23 @@ namespace Yamool.Net.Http
         private bool _idle = true;
         private DateTime _idleSinceUtc;
 
-        public Connection(ConnectionGroup connectionGroup)
+        public Connection(ServicePoint servicePoint)
         {
-            _connectionGorup = connectionGroup;
+            _servicePoint = servicePoint;
             _saea = SaeaPool.Default.GetSaea();
             _buffer = BufferPool.Default.GetBuffer();
+            _socket = new Socket(servicePoint.HostEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+            _socket.NoDelay = !servicePoint.UseNagleAlgorithm;
+            _asyncReadWrite = new AsyncReadWrite(_socket, _saea);
+
         }
 
         public PooledBuffer Buffer
         {
-            get;
-            private set;
+            get
+            {
+                return _buffer;
+            }
         }
 
         public bool Busy
@@ -49,16 +55,15 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return _connectionGorup.ServicePoint;
+                return _servicePoint;
             }
         }
 
-        internal bool CanReuse
+        public async Task<bool> ConnectAsync()
         {
-            get
-            {
-                return _socket.Poll(0, SelectMode.SelectRead) == false;
-            }
+            this.SetBuffer(0, 0);
+            await _asyncReadWrite.Connect(_servicePoint.HostEndPoint);
+            return true;
         }
 
         public void SetBuffer(int offset, int count)
@@ -75,7 +80,7 @@ namespace Yamool.Net.Http
         }
 
         public async Task<ArraySegment<Byte>> ReadAsync()
-        {            
+        {
             await _asyncReadWrite.Read();
             var offset = _buffer.Offset;
             return new ArraySegment<byte>(_buffer.Array, _buffer.Offset, (_saea.Offset - _buffer.Offset) + _saea.BytesTransferred);
@@ -88,8 +93,23 @@ namespace Yamool.Net.Http
         }
 
         internal void CloseOnIdle()
+        {          
+        }
+
+        internal void SetBusy()
         {
-            throw new NotImplementedException();
+            lock (this)
+            {
+                _busy = true;
+            }
+        }
+
+        public void SetIdle()
+        {
+            lock (this)
+            {
+                _busy = false;
+            }
         }
 
         private void CheckIdle()
@@ -99,6 +119,10 @@ namespace Yamool.Net.Http
                 _idle = true;
                 this.ServicePoint.DecrementConnection();
             }
+        }
+
+        public void Dispose()
+        {
         }
 
         private class AsyncReadWrite : INotifyCompletion
@@ -131,6 +155,14 @@ namespace Yamool.Net.Http
                 }
             }
 
+            private bool CanReuse
+            {
+                get
+                {
+                    return _socket.Connected && _socket.Poll(0, SelectMode.SelectRead) == true;
+                }
+            }
+
             public void GetResult()
             {
                 if (_saea.SocketError != SocketError.Success)
@@ -144,8 +176,20 @@ namespace Yamool.Net.Http
                 return this;
             }
 
+            public AsyncReadWrite Connect(EndPoint remoteEP)
+            {
+                this.Reset();
+                _saea.RemoteEndPoint = remoteEP;
+                if (this.CanReuse || !_socket.ConnectAsync(_saea))
+                {
+                    _completed = true;
+                }
+                return this;
+            }
+
             public AsyncReadWrite Read()
             {
+                this.Reset();
                 if (!_socket.ReceiveAsync(_saea))
                 {
                     _completed = true;
@@ -155,6 +199,7 @@ namespace Yamool.Net.Http
 
             public AsyncReadWrite Write()
             {
+                this.Reset();
                 if (!_socket.SendAsync(_saea))
                 {
                     _completed = true;
@@ -168,6 +213,12 @@ namespace Yamool.Net.Http
                 {
                     Task.Run(continuation);
                 }
+            }
+
+            private void Reset()
+            {
+                _completed = false;
+                _continuation = null;
             }
         }
     }

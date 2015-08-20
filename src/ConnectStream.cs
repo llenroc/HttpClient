@@ -15,12 +15,12 @@ namespace Yamool.Net.Http
     {
         private readonly Connection _connection;
         private readonly HttpRequest _request;
-        private volatile bool _disposed;    
-        private readonly bool _chunked; 
+        private volatile bool _disposed;
+        private readonly bool _chunked;
         private ArraySegment<byte> _readBuffer;
         private int _readOffset;
         private int _readBufferSize;
-        private long _readBytes;       
+        private long _readBytes;
         private bool _chunkEofRecvd;
         private ChunkParser _chunkParser;
 
@@ -66,6 +66,18 @@ namespace Yamool.Net.Http
             }
         }
 
+        private bool Eof
+        {
+            get
+            {
+                if (_chunked)
+                {
+                    return _chunkEofRecvd;
+                }
+                return _readBytes == 0L;
+            }
+        }
+
         public override long Length
         {
             get
@@ -86,42 +98,13 @@ namespace Yamool.Net.Http
             }
         }
 
-        private bool Eof
-        {
-            get
-            {
-                if (_chunked)
-                {
-                    return _chunkEofRecvd;
-                }
-                return _readBytes == 0L || (_readBytes == -1L && _readBufferSize <= 0);
-            }
-        }
-
         public override void Flush()
         {
         }
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            if (buffer == null)
-            {
-                throw new ArgumentNullException("buffer");
-            }
-            if (offset < 0 || offset > buffer.Length)
-            {
-                throw new ArgumentOutOfRangeException("offset");
-            }
-            if (count < 0 || count > buffer.Length - offset)
-            {
-                throw new ArgumentOutOfRangeException("count");
-            }
-            this.CheckDisposed();
-            if (_request.Cancelled)
-            {
-                throw new OperationCanceledException("The request was canceled.");
-            }
-            return this.DoReadAsync(buffer, offset, count).ConfigureAwait(false).GetAwaiter().GetResult();
+            throw new NotImplementedException("Cannot support synchronous operations.");
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -144,26 +127,57 @@ namespace Yamool.Net.Http
             throw new NotSupportedException();
         }
 
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
-            if (buffer == null)
-            {
-                throw new ArgumentNullException("buffer");
-            }
-            if (offset < 0 || offset > buffer.Length)
-            {
-                throw new ArgumentOutOfRangeException("offset");
-            }
-            if (count < 0 || count > buffer.Length - offset)
-            {
-                throw new ArgumentOutOfRangeException("count");
-            }
+            return 0;
+            //var leftBytes = _buffer.Count - _offset;
+           
+            //if (leftBytes > 0)
+            //{
+            //    count = Math.Min(count, leftBytes);
+            //    Buffer.BlockCopy(_buffer.Array, _offset, buffer, 0, count);
+            //    _offset += count;
+            //    return count;
+            //}
+            //_offset = 0;
+            //_buffer = await this.ReadBuffer();
+            //leftBytes = _buffer.Count - offset;
+            //if (leftBytes > 0)
+            //{
+            //    count = Math.Min(count, leftBytes);
+            //    Buffer.BlockCopy(_buffer.Array, _offset, buffer, 0, count);
+            //    _offset += count;
+            //    return count;
+            //}
+            //return 0;
+        }
+
+        public async Task<ArraySegment<byte>> ReadNext()
+        {
             this.CheckDisposed();
-            if (_request.Cancelled || cancellationToken.IsCancellationRequested)
+            if (_request.Aborted)
             {
                 throw new OperationCanceledException("The request was canceled.");
             }
-            return this.DoReadAsync(buffer, offset, count);
+            if (this.Eof)
+            {
+                return new ArraySegment<byte>();
+            }
+            if (_chunked)
+            {
+
+            }
+            var readData = new ArraySegment<byte>(_readBuffer.Array, _readOffset, _readBufferSize);
+            var readBytes = readData.Count;
+            if (_readBufferSize == 0)
+            {
+                _connection.SetBuffer(_connection.Buffer.Offset, _connection.Buffer.Length);
+                readData = await _connection.ReadAsync();
+                _readBufferSize = readData.Count;
+            }
+            _readBufferSize -= readData.Count;
+            _readBytes -= readData.Count;
+            return readData;
         }
 
         protected override void Dispose(bool disposing)
@@ -171,94 +185,16 @@ namespace Yamool.Net.Http
             if (disposing && !_disposed)
             {
                 _disposed = true;
-                _connection.Dispose();
+                        
             }
-        }        
-
-        private int FillFromBufferedData(byte[] buffer, int offset, int count)
-        {
-            if (_readBufferSize == 0)
-            {
-                return 0;
-            }
-            var bytesTransferred = Math.Min(count, _readBufferSize);      
-            Buffer.BlockCopy(_readBuffer.Array, _readBuffer.Offset, buffer, offset, count);
-            _readOffset += bytesTransferred;
-            _readBufferSize -= bytesTransferred;           
-            return bytesTransferred;
+            base.Dispose(disposing);
         }
-
-        private async Task<int> DoReadAsync(byte[] buffer, int offset, int count)
-        {
-            var bytesToRead = 0;
-            if (_chunked)
-            {
-                if (!_chunkEofRecvd)
-                {
-                    bytesToRead = await _chunkParser.ReadAsync(buffer, offset, count).ConfigureAwait(false);
-                    if (bytesToRead == 0)
-                    {
-                        _chunkEofRecvd = true;
-                    }
-                    return bytesToRead;
-                }
-            }
-            else
-            {
-                if (_readBytes != 0)
-                {
-                    bytesToRead = (int)Math.Min(_readBytes, (long)count);
-                }
-                else
-                {
-                    bytesToRead = count;
-                }
-            }
-            if (bytesToRead == 0 || this.Eof)
-            {
-                return 0;
-            }
-            var bytesTransferred = await this.InternalReadAsync(buffer, offset, bytesToRead).ConfigureAwait(false);
-            var doneReading = false;
-            if (bytesTransferred <= 0)
-            {
-                bytesTransferred = 0;
-                doneReading = true;
-            }
-            if (_readBytes != -1)
-            {
-                _readBytes -= bytesTransferred;
-                if (_readBytes < 0)
-                {
-                    throw new HttpOperationException();
-                }
-            }
-            if (_readBytes == 0 || doneReading)
-            {
-                _readBytes = 0;
-            }
-            return bytesTransferred;
-        }
-
-        private async Task<int> InternalReadAsync(byte[] buffer, int offset, int count)
-        {
-            var bytesToRead = this.FillFromBufferedData(buffer, offset, count);
-            if (bytesToRead > 0)
-            {
-                return bytesToRead;
-            }
-            await _connection.ReadAsync();
-            _readBuffer = _connection.TransferredBytes;
-            _readBufferSize = _connection.TransferredCount;
-            _readOffset = 0;
-            return this.FillFromBufferedData(buffer, offset, count);
-        }        
 
         private void CheckDisposed()
         {
             if (_disposed)
             {
-                throw new ObjectDisposedException(this.GetType().BaseType.FullName);
+                throw new ObjectDisposedException(base.GetType().FullName);
             }
         }
     }

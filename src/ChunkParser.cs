@@ -437,24 +437,24 @@ namespace Yamool.Net.Http
 
         private async Task<bool> TryGetMoreDataAsync()
         {
-            var unreadBytesSize = _bufferFillLength - _bufferCurrentPos;
-            if (unreadBytesSize >= BufferPool.DefaultBufferLength)
-            {
-                throw new IOException("unread bytes size exceeded the buffer length.");
-            }
-            if (unreadBytesSize > 0)
-            {
-                _connection.MoveBufferBytesToHead(_bufferCurrentPos, unreadBytesSize);
-                _connection.SetBuffer(unreadBytesSize, _bufferFillLength - unreadBytesSize);
-            }
-            else
-            {
-                _connection.ResetBuffer();
-            }
-            await _connection.ReadAsync();
-             _buffer = _connection.TransferredBytes;
-             _bufferFillLength = _connection.TransferredCount;
-            _bufferCurrentPos = 0;
+            //var unreadBytesSize = _bufferFillLength - _bufferCurrentPos;
+            //if (unreadBytesSize >= BufferPool.DefaultBufferLength)
+            //{
+            //    throw new IOException("unread bytes size exceeded the buffer length.");
+            //}
+            //if (unreadBytesSize > 0)
+            //{
+            //    _connection.MoveBufferBytesToHead(_bufferCurrentPos, unreadBytesSize);
+            //    _connection.SetBuffer(unreadBytesSize, _bufferFillLength - unreadBytesSize);
+            //}
+            //else
+            //{
+            //    _connection.ResetBuffer();
+            //}
+            //await _connection.ReadAsync();
+            // _buffer = _connection.TransferredBytes;
+            // _bufferFillLength = _connection.TransferredCount;
+            //_bufferCurrentPos = 0;
             return true;
         }
 

@@ -40,6 +40,10 @@ namespace Yamool.Net.Http
             _contentLength = coreData.ContentLength;
             _statusDescription = coreData.StatusDescription;
             _version = coreData.HttpVersion;
+            //if (this.m_ContentLength == 0L && this.m_ConnectStream is ConnectStream)
+            //{
+            //    ((ConnectStream)this.m_ConnectStream).CallDone();
+            //}
             var text = _headers[HttpHeaderNames.ContentLocation];
             if (text != null)
             {

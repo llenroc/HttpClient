@@ -44,8 +44,6 @@
     <Compile Include="BufferPool.cs" />
     <Compile Include="ChunkParser.cs" />
     <Compile Include="Connection.cs" />
-    <Compile Include="ConnectionGroup.cs" />
-    <Compile Include="ConnectionPool.cs" />
     <Compile Include="ConnectStream.cs" />
     <Compile Include="DnsResolverHelper.cs" />
     <Compile Include="HttpResponseData.cs" />

@@ -65,10 +65,9 @@ namespace Yamool.Net.Http
         private int _statusState;
         private ReadState _readState;
         private StatusLineValues _statusLineValues;
-        private HttpResponseHeaders _responseHeaders;
-        private Stream _connectStream;
-        private Connection _connection;
+        private HttpResponseHeaders _responseHeaders;        
         private CancellationToken _requestCancellationToken;
+        private HttpContent _submitContent;
 
         public HttpRequest(Uri uri) : this(HttpMethod.Get, uri, HttpVersion.HTTP11) { }
 
@@ -145,7 +144,7 @@ namespace Yamool.Net.Http
         /// <summary>
         /// Gets the boolean value that indicates this request whether is cancelled.
         /// </summary>
-        internal bool Cancelled
+        internal bool Aborted
         {
             get
             {
@@ -448,6 +447,17 @@ namespace Yamool.Net.Http
         }
 
         /// <summary>
+        /// Gets the service point to use for the request.
+        /// </summary>
+        public ServicePoint ServicePoint
+        {
+            get
+            {
+                return this.FindServicePoint(false);
+            }
+        }
+
+        /// <summary>
         /// Gets or sets the number of milliseconds to wait before the HTTP response completed.
         /// </summary>
         public int Timeout
@@ -516,7 +526,7 @@ namespace Yamool.Net.Http
         }
 
         /// <summary>
-        ///  Sends an HTTP request and return an HTTP response as asynchronous operation.
+        /// Sends an HTTP request and return an HTTP response as asynchronous operation.
         /// </summary>
         /// <param name="content"></param>
         /// <param name="requestCancellationToken"></param>
@@ -528,71 +538,60 @@ namespace Yamool.Net.Http
             {
                 throw new InvalidOperationException("This HTTP request has been submitted.");
             }
-            if (_timeout != -1)
+
+            var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(requestCancellationToken);
+            if (this.SetTimeout(linkedCts))
             {
-                var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(requestCancellationToken);
-                linkedCts.CancelAfter(_timeout);
                 _requestCancellationToken = linkedCts.Token;
-            }            
-            var servicePoint = this.FindServicePoint(false);
-            await this.BeginSubmitRequestAsync(servicePoint, content);
-            var responseData = new CoreResponseData(_statusLineValues, _responseHeaders, _connectStream);
+            }
+            _submitContent = content;
+            var connection = this.ServicePoint.GetConnection(this);
+            var responseData = await this.SendRequestAsync(connection).ConfigureAwait(false);
             return new HttpResponse(_uri, _method, responseData, _automaticDecompression);
         }
 
-        private async Task BeginSubmitRequestAsync(ServicePoint servicePoint, HttpContent content)
-        {
-            _connection = servicePoint.SubmitRequest();
-            try
-            {
-                //Connect to the remote host
-                await _connection.ConnectAsync();
-                //keep a connection
-                servicePoint.SetKeepAlives(this.KeepAlive);
-                await this.SubmitRequestAsync(content);
-            }
-            catch
-            {
-                if (_connectStream != null)
-                {
-                    _connectStream.Close();
-                }
-                else
-                {
-                    _connection.Dispose();
-                }
-                throw;
-            }
+        /// <summary>
+        /// Send request to the service point and get the response.
+        /// </summary>
+        /// <returns></returns>
+        private async Task<CoreResponseData> SendRequestAsync(Connection connection)
+        {           
+           try
+           {
+               await connection.ConnectAsync();
+               //write a request header to the connection that established connected.    
+               await this.WriteRequestAsync(connection);
+               return await this.ReadResponseAsync(connection);
+           }
+           catch
+           {
+               connection.CloseOnIdle();
+               throw;
+           }
         }
 
-        private async Task SubmitRequestAsync(HttpContent content = null)
+        private async Task<CoreResponseData> ReadResponseAsync(Connection connection)
         {            
-            //write a request header to the connection that established connected.            
-            await this.WriteRequestHeadersAsync();
-            if (_method.AllowRequestContent && content != null)
-            {
-                await content.CopyToAsync(null);
-            }
-            await this.ReadResponseAsync();
-        }
-
-        private async Task ReadResponseAsync()
-        {
-            _readState = ReadState.Start;
-            //cache buffer for the next continue read.
-            //byte[] readedBuffer = null;
-            var requestDone = false;            
+            _readState = ReadState.Start;           
+            var requestDone = false;        
+            var bytesScanned = 0;
+            ArraySegment<byte> readBuffer = new ArraySegment<byte>();
             while (!requestDone)
             {
-                await _connection.ReadAsync();              
-                var bytesRead = _connection.TransferredCount;
+                if (this.Aborted)
+                {
+                    throw new OperationCanceledException("The request was canceled.");
+                }
+                connection.SetBuffer(connection.Buffer.Offset, connection.Buffer.Length);
+                readBuffer = await connection.ReadAsync();
+                var bytesRead = readBuffer.Count;
                 if (bytesRead == 0)
                 {
+                    //connection is closed by the remote host.
                     break;
                 }
-                var transferredData = _connection.TransferredBytes;              
-                var bytesScanned = 0;           
-                var parseStatus = this.ParseResponseData(transferredData, ref bytesScanned, ref requestDone);
+                bytesScanned = 0;
+                var parseStatus = this.ParseResponseData(readBuffer, ref bytesScanned, ref requestDone);
                 if (parseStatus == DataParseStatus.Invalid || parseStatus == DataParseStatus.DataTooBig)
                 {
                     if (parseStatus == DataParseStatus.Invalid)
@@ -613,38 +612,24 @@ namespace Yamool.Net.Http
                         {
                             throw new IOException("unparsed size exceeded the buffer length.");                            
                         }
-                        var nextReadCount = _connection.MoveBufferBytesToHead(bytesScanned, unparsedDataSize);
-                        _connection.SetBuffer(unparsedDataSize, nextReadCount);
+                        //copy the left bytes
+                        Buffer.BlockCopy(connection.Buffer.Array, bytesScanned, connection.Buffer.Array, connection.Buffer.Offset, unparsedDataSize);
+                        connection.SetBuffer(unparsedDataSize, connection.Buffer.Length - unparsedDataSize);
                     }
-                }
-                else
-                {//done or continueparser?
-                    _connection.ResetBuffer();
                 }
             }
             if (this.Redirect((HttpStatusCode)_statusLineValues.StatusCode))
-            {
-                _method = HttpMethod.Get;
-                _autoRedirects++;
-                if (!_allowAutoRedirect)
-                {
-                    throw new RedirectException(_originUri);
-                }
-                if (_autoRedirects > _maxAutomaticRedirections)
-                {
-                    throw new CircularRedirectException(_maxAutomaticRedirections, _originUri);
-                }
+            {               
                 if (_redirectedToDifferentHost)
                 {
-                    //release a current connection/
-                    _connection.Dispose();
-                    await this.BeginSubmitRequestAsync(this.FindServicePoint(true), null, _pendingRequestCts.Token);
+                    var previous_connection = connection;
+                    connection = this.FindServicePoint(true).GetConnection(this);
+                    previous_connection.CloseOnIdle();
                 }
-                else
-                {
-                    await this.SubmitRequestAsync();
-                }
+                return await this.SendRequestAsync(connection);
             }
+            var connectStream = this.CreateResponseStream(connection, readBuffer, bytesScanned);
+            return new CoreResponseData(_statusLineValues, _responseHeaders, connectStream);
         }
 
         private DataParseStatus ParseResponseData(ArraySegment<byte> data, ref int bytesScanned, ref bool requestDone)
@@ -706,14 +691,7 @@ namespace Yamool.Net.Http
                 case ReadState.Data:
                     {
                         requestDone = true;
-                        if (!(_statusLineValues.StatusCode >= 300 && _statusLineValues.StatusCode <= 399))
-                        {
-                            result = this.ParseStreamData(data, ref bytesScanned);
-                        }
-                        else
-                        {
-                            result = DataParseStatus.Done;
-                        }
+                        result = DataParseStatus.Done;
                         break;
                     }
             }
@@ -928,15 +906,16 @@ namespace Yamool.Net.Http
             return parseStatus;
         }
 
-        private DataParseStatus ParseStreamData(ArraySegment<byte> data, ref int bytesParsed)
-        {            
+        private ConnectStream CreateResponseStream(Connection connection, ArraySegment<byte> data, int bytesParsed)
+        {
             var fHaveChunked = false;
             var dummyResponseStream = false;
             var contentLength = this.ProcessHeaderData(ref fHaveChunked, out dummyResponseStream);
             if (contentLength == -2)
             {
-                return DataParseStatus.Invalid;
+                throw new HttpResponseException("Cannot correct to parse the server response.", WebExceptionStatus.ServerProtocolViolation);
             }
+            _statusLineValues.ContentLength = contentLength;
             int bufferLeft = data.Count - bytesParsed;
             var bytesToCopy = 0;
             if (dummyResponseStream)
@@ -951,20 +930,15 @@ namespace Yamool.Net.Http
                 {
                     bytesToCopy = (int)contentLength;
                 }
-            }
-            var result = DataParseStatus.ContinueParsing;
+            }           
             if (bytesToCopy != -1 && bytesToCopy <= bufferLeft)
             {
-                _connectStream = new ConnectStream(_connection, data, bytesParsed, bytesToCopy, dummyResponseStream ? 0 : contentLength, fHaveChunked, this);
-                result = DataParseStatus.ContinueParsing;
+                return new ConnectStream(connection, data, bytesParsed, bytesToCopy, dummyResponseStream ? 0 : contentLength, fHaveChunked, this);
             }
             else
             {
-                _connectStream = new ConnectStream(_connection, data, bytesParsed, bufferLeft, dummyResponseStream ? 0 : contentLength, fHaveChunked, this);
-                result = DataParseStatus.Done;                
+                return new ConnectStream(connection, data, bytesParsed, bufferLeft, dummyResponseStream ? 0 : contentLength, fHaveChunked, this);
             }
-            _statusLineValues.ContentLength = contentLength;            
-            return result;
         }
 
         private bool Redirect(HttpStatusCode code)
@@ -975,6 +949,16 @@ namespace Yamool.Net.Http
                 code == HttpStatusCode.SeeOther || // 303
                 code == HttpStatusCode.TemporaryRedirect)  // 307
             {
+                if (!_allowAutoRedirect)
+                {
+                    throw new RedirectException(_originUri);
+                }
+                _method = HttpMethod.Get;
+                _autoRedirects++;
+                if (_autoRedirects > _maxAutomaticRedirections)
+                {
+                    throw new CircularRedirectException(_maxAutomaticRedirections, _originUri);
+                }
                 var location = _responseHeaders.Location;
                 if (location == null)
                 {
@@ -1095,7 +1079,7 @@ namespace Yamool.Net.Http
             return false;
         }
 
-        private async Task WriteRequestHeadersAsync()
+        private async Task WriteRequestAsync(Connection connection)
         {
             this.UpdateHeaders();
             if (_httpWriteMode != HttpWriteMode.None)
@@ -1134,7 +1118,6 @@ namespace Yamool.Net.Http
                     _headers.AddInternal(HttpHeaderNames.AcceptEncoding, DeflateHeader);
                 }
             }
-            //Connection header
             if (_keepAlive)
             {
                 _headers.SetInternal(HttpHeaderNames.Connection, "Keep-Alive");
@@ -1153,26 +1136,57 @@ namespace Yamool.Net.Http
             {
                 requestLine = this.GenerateRequestLine();
             }
+            // Request-Line   = Method SP Request-URI SP HTTP-Version CRLF
+            // i.e. GET http://www.w3.org/pub/WWW/TheProject.html HTTP/1.1\r\n
 
-            var writeBufferCount = requestHeadersString.Length + requestLine.Length + 5;
-            var writeBuffer = new byte[writeBufferCount];
+            var writeBytesCount = requestHeadersString.Length + requestLine.Length + RequestLineConstantSize;
+            byte[] writeBuffer = null;
+            var usePooledBuffer = false;
+            if (connection.Buffer.Length >= writeBytesCount)
+            {
+                writeBuffer = connection.Buffer.Array;
+                usePooledBuffer = true;
+            }
+            else
+            {
+                writeBuffer = new byte[writeBytesCount];
+            }
             var offset = 0;
             offset += Encoding.ASCII.GetBytes(requestLine, 0, requestLine.Length, writeBuffer, offset);
+            Buffer.BlockCopy(HttpBytes, 0, writeBuffer, offset, HttpBytes.Length);
+            offset += HttpBytes.Length;
             writeBuffer[offset++] = (byte)(_version == HttpVersion.HTTP20 ? '2' : '1');
             writeBuffer[offset++] = (byte)'.';
             writeBuffer[offset++] = (byte)(_version == HttpVersion.HTTP20 ? '0' : '1');
             writeBuffer[offset++] = (byte)'\r';
             writeBuffer[offset++] = (byte)'\n';
             Encoding.UTF8.GetBytes(requestHeadersString, 0, requestHeadersString.Length, writeBuffer, offset);
-            var leftWriteBytes = writeBufferCount;
-            var readIndex = 0;
+            //transfer data
+            var beginReadIndex = 0;
+            var leftWriteBytes = writeBytesCount;
             while (leftWriteBytes > 0)
             {
-                var count = Math.Min(writeBufferCount - readIndex, _connection.Buffer.Length);
-                Buffer.BlockCopy(writeBuffer, readIndex, _connection.Buffer.Array, _connection.Buffer.Offset, count);
-                var writeBytes = await _connection.WriteAsync();
+                var count = Math.Min(writeBytesCount - beginReadIndex, connection.Buffer.Length);
+                if (usePooledBuffer)
+                {
+                    connection.SetBuffer(connection.Buffer.Offset + beginReadIndex, count);
+                }
+                else
+                {
+                    Buffer.BlockCopy(writeBuffer, beginReadIndex, connection.Buffer.Array, connection.Buffer.Offset, count);
+                    connection.SetBuffer(connection.Buffer.Offset, count);
+                }
+                var writeBytes = await connection.WriteAsync();
                 leftWriteBytes -= writeBytes;
-                readIndex += writeBytes;
+                beginReadIndex += writeBytes;
+            }
+            if (_method.AllowRequestContent && _submitContent != null)
+            {
+                using (_submitContent)
+                {
+                    await _submitContent.CopyToAsync(null);
+                    _submitContent = null;
+                }
             }
         }
 
@@ -1197,6 +1211,16 @@ namespace Yamool.Net.Http
                     _headers.SetInternal(HttpHeaderNames.Cookie, cookieHeader);
                 }
             }
+        }
+
+        private bool SetTimeout(CancellationTokenSource cts)
+        {
+            if (_timeout != -1)
+            {
+                cts.CancelAfter(_timeout);
+                return true;
+            }
+            return false;
         }
 
         private static string GetSafeHostAndPort(Uri sourceUri)

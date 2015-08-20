@@ -7,6 +7,7 @@ namespace Yamool.Net.Http
     using System.Collections.Generic;
     using System.Collections.Concurrent;
     using System.Net;
+    using System.Net.Sockets;
     using System.Security.Cryptography.X509Certificates;
     using System.Threading;
 
@@ -15,13 +16,14 @@ namespace Yamool.Net.Http
     /// </summary>
     public class ServicePoint
     {
+        private const int DefaultConnectionListSize = 3;
         private Uri _uri;
         private DateTime _idleSince;
         private int _connectionLimit;
         private bool _usesProxy;
         private int _maxIdleTime;
         private bool _useNagle;
-        private int _currentConnections;
+        private int _activeConnections;
         private X509Certificate _certificate;
         private X509Certificate _clientCertificate;
         private bool _tcp_keepalive;
@@ -30,7 +32,7 @@ namespace Yamool.Net.Http
         private readonly string _lookupString;
         private Timer _expiringTimer;
         private DnsResolverHelper _dnsHelper;
-        private Dictionary<string, ConnectionGroup> _groups;
+        private List<Connection> _connections;
 
         internal ServicePoint(Uri uri, int connectionLimit, string lookupString, bool usesProxy)
         {
@@ -45,7 +47,7 @@ namespace Yamool.Net.Http
             _useNagle = ServicePointManager._useNagle;
             _idleSince = DateTime.Now;
             _dnsHelper = new DnsResolverHelper(uri);
-            _groups = new Dictionary<string, ConnectionGroup>(1);
+            _connections = new List<Connection>(DefaultConnectionListSize);
         }
 
         /// <summary>
@@ -93,6 +95,7 @@ namespace Yamool.Net.Http
             set
             {
                 _connectionLimit = value;
+                this.PruneExcesiveConnections();
             }
         }
 
@@ -114,7 +117,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return _currentConnections;
+                return _connections.Count;
             }
         }
 
@@ -158,7 +161,7 @@ namespace Yamool.Net.Http
                 }
                 _maxIdleTime = value;
                 //need a thread lock for this operation.
-                if (Interlocked.CompareExchange(ref _currentConnections, 0, 0) == 0)
+                if (Interlocked.CompareExchange(ref _activeConnections, 0, 0) == 0)
                 {
                     if (_expiringTimer != null)
                     {
@@ -204,16 +207,6 @@ namespace Yamool.Net.Http
         }
 
         /// <summary>
-        /// Removes the specified connection group from this ServicePoint object.
-        /// </summary>
-        /// <param name="connectionGroupName"></param>
-        /// <returns></returns>
-        public bool CloseConnectionGroup(string connectionGroupName)
-        {
-            return this.ReleaseConnectionGroup(connectionGroupName);
-        }
-
-        /// <summary>
         /// Enables or disables the keep-alive option on a TCP connection.
         /// </summary>
         /// <param name="enabled"></param>
@@ -237,20 +230,24 @@ namespace Yamool.Net.Http
             _tcp_keepalive_interval = keepAliveInterval;
         }
 
-        internal void SubmitRequest(HttpRequest request, string connName = null)
+        internal void KeepAliveSetup(Socket socket)
         {
-            ConnectionGroup connGroup;            
-            lock (this)
-            {               
-                connGroup = this.FindConnectionGroup(connName, false);
-            }
-            var forcedsubmit = false;
-            var connection = connGroup.FindConnection(request, connName, out forcedsubmit);            
-            if (connection == null)
+            if (!_tcp_keepalive)
             {
-                //this request was aborted.
                 return;
-            }            
+            }
+            var bytes = new byte[12];
+            PutBytes(bytes, (uint)(_tcp_keepalive ? 1 : 0), 0);
+            PutBytes(bytes, (uint)_tcp_keepalive_time, 4);
+            PutBytes(bytes, (uint)_tcp_keepalive_interval, 8);
+            socket.IOControl(IOControlCode.KeepAliveValues, bytes, null);
+        }
+
+        internal Connection GetConnection(HttpRequest request)
+        {
+            var created = false;
+            var connection = this.CreateOrReuseConnection(request, out created);
+            return connection;
         }
 
         internal void SetCertificates(X509Certificate client, X509Certificate server)
@@ -264,7 +261,7 @@ namespace Yamool.Net.Http
         /// </summary>
         internal void IncrementConnection()
         {
-            if (Interlocked.Increment(ref _currentConnections) == 1)
+            if (Interlocked.Increment(ref _activeConnections) == 1)
             {
                 if (_expiringTimer != null)
                 {
@@ -279,67 +276,110 @@ namespace Yamool.Net.Http
         /// </summary>
         internal void DecrementConnection()
         {
-            if (Interlocked.Decrement(ref _currentConnections) == 0)
+            if (Interlocked.Decrement(ref _activeConnections) == 0)
             {
-                if (_currentConnections < 0)
-                    Interlocked.Exchange(ref _currentConnections, 0);
+                if (_activeConnections < 0)
+                {
+                    Interlocked.Exchange(ref _activeConnections, 0);
+                }
                 _idleSince = DateTime.Now;
                 _expiringTimer = new Timer(ServicePointManager.IdleServicePointTimeoutDelegate, this, _maxIdleTime, Timeout.Infinite);
             }
         }
 
-        //Sets connections in this group to not be KeepAlive.
-        internal bool ReleaseConnectionGroup(string connName)
+        /// <summary>
+        /// Sets all connections to not be KeepAlive
+        /// </summary>
+        internal void ReleaseAllConnections()
         {
-            ConnectionGroup connectionGroup = null;
+            var removedConnections = new List<Connection>(_connections.Count);
             lock (this)
             {
-                connectionGroup = this.FindConnectionGroup(connName, true);
-                if (connectionGroup == null)
+                foreach (var connection in _connections)
                 {
-                    return false;
+                    removedConnections.Add(connection);
                 }
-                // Cancel the timer so it doesn't fire later and clean up a different 
-                // connection group with the same name.
-                connectionGroup.CancelIdleTimer();
-                //remove ConnectionGroup from our Hashtable
-                _groups.Remove(connName);
+                _connections = new List<Connection>();
             }
-            connectionGroup.DisableKeepAliveOnConnections();
-            return true;
-        }
-
-        //Sets all connections in all connections groups to not be KeepAlive.
-        internal void ReleaseAllConnectionGroups()
-        {
-            // To avoid deadlock (can't lock a ServicePoint followed by a Connection), copy out all the
-            // connection groups in a lock, then release them all outside of it.
-            var cgs = new List<ConnectionGroup>(_groups.Count);
-            lock (this)
+            foreach (var connection in removedConnections)
             {
-                foreach (ConnectionGroup cg in _groups.Values)
-                {
-                    cgs.Add(cg);
-                }
-                _groups = new Dictionary<string, ConnectionGroup>(1);
-            }
-            foreach (var cg in cgs)
-            {
-                cg.CancelIdleTimer();
-                cg.DisableKeepAliveOnConnections();
+                connection.CloseOnIdle();
             }
         }
 
-        private ConnectionGroup FindConnectionGroup(string connName, bool dontCreate)
+        private Connection CreateOrReuseConnection(HttpRequest request, out bool created)
         {
-            ConnectionGroup connectionGroup;
-            var lookupStr = ConnectionGroup.MakeQueryStr(connName);
-            if (!_groups.TryGetValue(lookupStr, out connectionGroup) && !dontCreate)
+            Connection newConnection = null;
+            var freeConnectionsAvail = false;
+            created = false;
+            lock (this)
             {
-                connectionGroup = new ConnectionGroup(this, connName);
-                _groups.Add(lookupStr, connectionGroup);
+                foreach (var currentConnection in _connections)
+                {
+                    if (currentConnection.Busy)
+                    {
+                        continue;
+                    }
+                    freeConnectionsAvail = true;
+                    newConnection = currentConnection;
+                    created = true;
+                }
+                if (!freeConnectionsAvail && this.CurrentConnections < _connectionLimit)
+                {
+                    newConnection = new Connection(this);
+                    _connections.Add(newConnection);
+                }
+                else
+                {
+                    //waiting when get an available connection or throw an exception?
+                    throw new InvalidOperationException("The maximum number of the service point connection has been reached.");
+                }
+                newConnection.SetBusy();
             }
-            return connectionGroup;
-        }      
+            return newConnection;
+        }
+
+        /// <summary>
+        /// Removes extra connections that are found when reducing the connection limit
+        /// </summary>
+        private void PruneExcesiveConnections()
+        {
+            var connectionsToClose = new List<Connection>();
+            lock (this)
+            {
+                var connectionLimit = this.ConnectionLimit;
+                if (this.CurrentConnections > connectionLimit)
+                {
+                    var numberToPrune = this.CurrentConnections - connectionLimit;
+                    for (var i = 0; i < numberToPrune; i++)
+                    {
+                        connectionsToClose.Add(_connections[i]);
+                    }
+                    _connections.RemoveRange(0, numberToPrune);
+                }
+            }
+            foreach (var connection in connectionsToClose)
+            {
+                connection.CloseOnIdle();
+            }
+        }
+
+        private static void PutBytes(byte[] bytes, uint v, int offset)
+        {
+            if (BitConverter.IsLittleEndian)
+            {
+                bytes[offset] = (byte)(v & 0x000000ff);
+                bytes[offset + 1] = (byte)((v & 0x0000ff00) >> 8);
+                bytes[offset + 2] = (byte)((v & 0x00ff0000) >> 16);
+                bytes[offset + 3] = (byte)((v & 0xff000000) >> 24);
+            }
+            else
+            {
+                bytes[offset + 3] = (byte)(v & 0x000000ff);
+                bytes[offset + 2] = (byte)((v & 0x0000ff00) >> 8);
+                bytes[offset + 1] = (byte)((v & 0x00ff0000) >> 16);
+                bytes[offset] = (byte)((v & 0xff000000) >> 24);
+            }
+        }
     }   
 }

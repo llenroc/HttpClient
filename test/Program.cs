@@ -21,24 +21,26 @@ namespace Yamool.Net.Http.Tests
         {
             var watcher = new System.Diagnostics.Stopwatch();
             watcher.Start();
-            var request = new HttpRequest(new Uri("http://stackoverflow.com/questions/9343594/how-to-call-asynchronous-method-from-synchronous-method-in-c"));
+            var request = new HttpRequest(new Uri("http://cn.bing.com"));
             request.CookieContainer = new CookieContainer();
             var response = await request.SendAsync();
-            var sum = 0;           
+            var sum = 0;
             using (var stream = response.GetResponseStream())
             {
-                var buffer = new byte[4096];
-                var count = 0;
-               
-                while ((count =stream.Read(buffer, 0, buffer.Length)) > 0)
+                using (var buffer = BufferPool.Default.GetBuffer())
                 {
-                    sum += count;
-                   // Console.WriteLine(count);
+                    var count = 0;
+
+                    while ((count = await stream.ReadAsync(buffer.Array, buffer.Offset, buffer.Length)) > 0)
+                    {
+                        sum += count;
+                        // Console.WriteLine(count);
+                    }
                 }
             }
             watcher.Stop();
             Console.WriteLine("#1 total " + sum + " bytes");
-          
+
             Console.WriteLine("elapsed[1]:" + watcher.Elapsed.TotalMilliseconds + "'ms");
         }
 
@@ -55,14 +57,14 @@ namespace Yamool.Net.Http.Tests
             {
                 var buffer = new byte[4096];
                 var count = 0;
-                while ((count =await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
+                while ((count = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false)) > 0)
                 {
                     sum += count;
                 }
             }
             watcher.Stop();
             Console.WriteLine("#2 total " + sum + " bytes");
-            
+
             Console.WriteLine("elapsed[2]:" + watcher.Elapsed.TotalMilliseconds + "'ms");
         }
     }

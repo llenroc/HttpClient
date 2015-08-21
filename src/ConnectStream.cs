@@ -24,6 +24,7 @@ namespace Yamool.Net.Http
         private bool _chunkEofRecvd;
         private ChunkParser _chunkParser;
         private PooledBuffer _pooledBuffer;
+        private int _shutDown;
 
         internal ConnectStream(Connection connection, ArraySegment<byte> buffer, int offset, int bufferCount, long readCount, bool chunked, HttpRequest request)
         {
@@ -106,7 +107,45 @@ namespace Yamool.Net.Http
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            throw new NotImplementedException("Cannot support synchronous operations.");
+            if (buffer == null)
+            {
+                throw new ArgumentNullException("buffer");
+            }
+            if (offset < 0 || offset > buffer.Length)
+            {
+                throw new ArgumentOutOfRangeException("offset");
+            }
+            if (count < 0 || count > buffer.Length - offset)
+            {
+                throw new ArgumentOutOfRangeException("count");
+            }
+            this.CheckCancelledOrDisposed();
+            if (this.Eof)
+            {
+                return 0;
+            }
+            var bytesToRead = 0;
+            if (_chunked)
+            {
+                if (!_chunkEofRecvd)
+                {
+                    bytesToRead = _chunkParser.Read(buffer, offset, count);
+                    if (bytesToRead == 0)
+                    {
+                        _chunkEofRecvd = true;
+                    }
+                    return bytesToRead;
+                }
+            }
+            count = Math.Min((int)_readBytes, count);
+            bytesToRead = this.FillFromBufferedData(buffer, offset, count);
+            if (bytesToRead > 0)
+            {
+                return bytesToRead;
+            }
+            bytesToRead = _connection.Read(buffer, offset, count);
+            _readBytes -= bytesToRead;
+            return bytesToRead;
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -167,11 +206,12 @@ namespace Yamool.Net.Http
             }
             count = Math.Min((int)_readBytes, count);
             bytesToRead = this.FillFromBufferedData(buffer, offset, count);
-            if (bytesToRead > 0)
+            if (bytesToRead == 0)
             {
-                return bytesToRead;
-            }
-            return await _connection.ReadAsync(buffer, offset, count);
+                bytesToRead = await _connection.ReadAsync(buffer, offset, count);
+            }           
+            _readBytes -= bytesToRead;
+            return bytesToRead;
         }
 
         public async Task<ArraySegment<byte>> ReadNextBuffer()
@@ -201,7 +241,18 @@ namespace Yamool.Net.Http
                 _readBufferSize -= bytesToRead;
                 return new ArraySegment<byte>(_readBuffer.Array, _readOffset, bytesToRead);
             }
-            return await _connection.ReadPooledBufferAsync();
+            var readedBuffer = await _connection.ReadPooledBufferAsync();
+            _readBytes -= readedBuffer.Count;
+            return readedBuffer;
+        }
+
+        private void CloseInternal(bool aborting = false)
+        {
+            if (Interlocked.Increment(ref _shutDown) > 1)
+            {
+                return;
+            }
+            _connection.Free();
         }
 
         private int FillFromBufferedData(byte[] buffer, int offset, int count)
@@ -222,7 +273,6 @@ namespace Yamool.Net.Http
             if (disposing && !_disposed)
             {
                 _disposed = true;
-                        
             }
             base.Dispose(disposing);
         }

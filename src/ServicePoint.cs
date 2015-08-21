@@ -243,10 +243,11 @@ namespace Yamool.Net.Http
             socket.IOControl(IOControlCode.KeepAliveValues, bytes, null);
         }
 
-        internal Connection GetConnection(HttpRequest request)
+        internal Connection SubmitRequest(HttpRequest request)
         {
             var created = false;
             var connection = this.CreateOrReuseConnection(request, out created);
+            connection.SubmitRequest(request);
             return connection;
         }
 
@@ -316,7 +317,7 @@ namespace Yamool.Net.Http
             {
                 foreach (var currentConnection in _connections)
                 {
-                    if (currentConnection.Busy)
+                    if (currentConnection.BusyCount > 0)
                     {
                         continue;
                     }
@@ -331,10 +332,13 @@ namespace Yamool.Net.Http
                 }
                 else
                 {
-                    //waiting when get an available connection or throw an exception?
-                    throw new InvalidOperationException("The maximum number of the service point connection has been reached.");
+                    if (this.CurrentConnections > _connectionLimit)
+                    {
+                        //waiting when get an available connection or throw an exception?
+                        throw new InvalidOperationException("The maximum number of the service point connection has been reached.");
+                    }
                 }
-                newConnection.SetBusy();
+                newConnection.MarkAsReserved();
             }
             return newConnection;
         }

@@ -20,8 +20,8 @@ namespace Yamool.Net.Http
         private readonly Saea _saea;
         private readonly AsyncReadWrite _asyncReadWrite;
         private readonly Socket _socket;
-        private bool _busy;
         private bool _idle = true;
+        private int _reservedCount;
         private DateTime _idleSinceUtc;
 
         public Connection(ServicePoint servicePoint)
@@ -35,19 +35,19 @@ namespace Yamool.Net.Http
 
         }
 
+        public int BusyCount
+        {
+            get
+            {
+                return _reservedCount;
+            }
+        }
+
         public PooledBuffer Buffer
         {
             get
             {
                 return _buffer;
-            }
-        }
-
-        public bool Busy
-        {
-            get
-            {
-                return _busy;
             }
         }
 
@@ -64,6 +64,20 @@ namespace Yamool.Net.Http
             _saea.SetBuffer(0, 0);
             await _asyncReadWrite.Connect(_servicePoint.HostEndPoint);
             return true;
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                this.CloseSocket(0);
+            }
+            finally
+            {
+                _saea.Free();
+                _buffer.Dispose();
+            }
+            GC.SuppressFinalize(this);
         }
 
         public Task<ArraySegment<Byte>> ReadPooledBufferAsync()
@@ -86,6 +100,20 @@ namespace Yamool.Net.Http
             return new ArraySegment<byte>(_buffer.Array, _buffer.Offset, (_saea.Offset - _buffer.Offset) + _saea.BytesTransferred);
         }
 
+        public void CloseSocket(int timeout = 0)
+        {
+            var abortSocket = _socket;
+            if (abortSocket != null)
+            {
+                abortSocket.Close(timeout);
+            }
+        }
+
+        internal int Read(byte[] buffer, int offset, int count)
+        {
+            return _socket.Receive(buffer, offset, count, SocketFlags.None);
+        }
+
         internal async Task<int> ReadAsync(byte[] buffer, int offset, int count)
         {
             _saea.SetBuffer(buffer, offset, count);
@@ -93,7 +121,7 @@ namespace Yamool.Net.Http
             return _saea.BytesTransferred;
         }
 
-        public async Task<int> WritePooledBufferAsync(int offset, int count)
+        internal async Task<int> WritePooledBufferAsync(int offset, int count)
         {
             if (offset < 0 || offset < _buffer.Offset)
             {
@@ -108,25 +136,37 @@ namespace Yamool.Net.Http
             return _saea.BytesTransferred;
         }
 
+        /// <summary>
+        /// Cause the Connection to Close and Abort its socket,after the next request is completed. 
+        /// If the Connection is already idle, then Aborts the socket immediately.
+        /// </summary>
         internal void CloseOnIdle()
-        {          
-        }
-
-        internal void SetBusy()
         {
             lock (this)
             {
-                _busy = true;
+                if (!_idle)
+                {
+                    this.CheckIdle();
+                }               
+                else
+                {
+                    //If the Connection is already idle, then Aborts the socket immediately.
+                    _saea.Free();
+                    this.CloseSocket(0);
+                    _buffer.Dispose();
+                    GC.SuppressFinalize(this);
+                }
             }
         }
 
-        public void SetIdle()
+        internal bool SubmitRequest(HttpRequest request)
         {
             lock (this)
             {
-                _busy = false;
+                this.CheckNonIdle();
             }
-        }
+            return true;
+        }       
 
         private void CheckIdle()
         {
@@ -134,13 +174,29 @@ namespace Yamool.Net.Http
             {
                 _idle = true;
                 this.ServicePoint.DecrementConnection();
+                _idleSinceUtc = DateTime.UtcNow;
             }
         }
 
-        public void Dispose()
+        private void CheckNonIdle()
         {
+            if (_idle)
+            {
+                _idle = false;
+                this.ServicePoint.IncrementConnection();
+            }
         }
 
+        internal void MarkAsReserved()
+        {
+            Interlocked.Increment(ref _reservedCount);          
+        }
+
+        internal void Free()
+        {
+            Interlocked.Decrement(ref _reservedCount);
+        }
+        
         private class AsyncReadWrite : INotifyCompletion
         {
             private static readonly Action Sentinal = () => { };

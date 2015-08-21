@@ -7,7 +7,7 @@ namespace Yamool.Net.Http
     using System.Threading;
     using System.Collections.Concurrent;
 
-    public class BufferPool
+    internal class BufferPool
     {
         public const int DefaultBufferLength = 4096;
         private static Lazy<BufferPool> defaultBufferPool = new Lazy<BufferPool>(() => new BufferPool(1));
@@ -53,7 +53,7 @@ namespace Yamool.Net.Http
         }
     }
 
-    public class PooledBuffer : IDisposable
+    internal class PooledBuffer : IDisposable
     {
         private BufferPool _pool;
 

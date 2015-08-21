@@ -68,7 +68,12 @@ namespace Yamool.Net.Http
             _readState = ReadState.ChunkLength;
             _currentChunkLength = -1;
         }
-                
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            return AsyncHelpers.RunSync<int>(() => ReadAsync(buffer, offset, count));
+        }
+
         public async Task<int> ReadAsync(byte[] buffer, int offset, int count)
         {
             var bytesToRead = 0;
@@ -123,7 +128,7 @@ namespace Yamool.Net.Http
                         }
                     case DataParseStatus.NeedMoreData:
                         {
-                            if (!await TryGetMoreDataAsync())
+                            if (!await this.TryGetMoreDataAsync())
                             {
                                 // Read operation didn't complete synchronously. Just return. The read completion
                                 // callback will continue.
@@ -140,7 +145,7 @@ namespace Yamool.Net.Http
         quit:
             return bytesToRead;
         }
-
+        
         public async Task<ArraySegment<byte>> ReadNextBuffer()
         {
             var count = await this.ReadAsync(_connection.Buffer.Array, _connection.Buffer.Offset, _connection.Buffer.Length);

@@ -545,7 +545,7 @@ namespace Yamool.Net.Http
                 _requestCancellationToken = linkedCts.Token;
             }
             _submitContent = content;
-            var connection = this.ServicePoint.GetConnection(this);
+            var connection = this.ServicePoint.SubmitRequest(this);
             var responseData = await this.SendRequestAsync(connection).ConfigureAwait(false);
             return new HttpResponse(_uri, _method, responseData, _automaticDecompression);
         }
@@ -572,10 +572,10 @@ namespace Yamool.Net.Http
 
         private async Task<CoreResponseData> ReadResponseAsync(Connection connection)
         {            
-            _readState = ReadState.Start;           
+            _readState = ReadState.Start;
             var requestDone = false;        
             var bytesScanned = 0;
-            ArraySegment<byte> readBuffer = new ArraySegment<byte>();
+            var readBuffer = new ArraySegment<byte>();
             var buffer_offset = connection.Buffer.Offset;
             var buffer_length = connection.Buffer.Length;
             while (!requestDone)
@@ -624,12 +624,17 @@ namespace Yamool.Net.Http
                     buffer_offset = connection.Buffer.Offset;
                 }
             }
+            if (!requestDone)
+            {
+                //not finished.
+                throw new HttpRequestException("The request not finished.");
+            }
             if (this.Redirect((HttpStatusCode)_statusLineValues.StatusCode))
             {               
                 if (_redirectedToDifferentHost)
                 {
                     var previous_connection = connection;
-                    connection = this.FindServicePoint(true).GetConnection(this);
+                    connection = this.FindServicePoint(true).SubmitRequest(this);
                     previous_connection.CloseOnIdle();
                 }
                 return await this.SendRequestAsync(connection);

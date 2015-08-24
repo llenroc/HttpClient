@@ -30,9 +30,10 @@ namespace Yamool.Net.Http
         private int _tcp_keepalive_time;
         private int _tcp_keepalive_interval;
         private readonly string _lookupString;
-        private Timer _expiringTimer;
         private DnsResolverHelper _dnsHelper;
         private List<Connection> _connections;
+        private Timer _idleTimer;
+        private int _currentConnections;
 
         internal ServicePoint(Uri uri, int connectionLimit, string lookupString, bool usesProxy)
         {
@@ -95,7 +96,6 @@ namespace Yamool.Net.Http
             set
             {
                 _connectionLimit = value;
-                this.PruneExcesiveConnections();
             }
         }
 
@@ -117,7 +117,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return _connections.Count;
+                return _currentConnections;
             }
         }
 
@@ -160,14 +160,14 @@ namespace Yamool.Net.Http
                     return;
                 }
                 _maxIdleTime = value;
-                //need a thread lock for this operation.
-                if (Interlocked.CompareExchange(ref _activeConnections, 0, 0) == 0)
+                if (_idleTimer != null)
                 {
-                    if (_expiringTimer != null)
+                    try
                     {
-                        _expiringTimer.Change(_maxIdleTime, Timeout.Infinite);                        
+                        _idleTimer.Change(_maxIdleTime, _maxIdleTime);
                     }
-                }                
+                    catch (ObjectDisposedException) { }
+                }
             }
         }
 
@@ -245,8 +245,21 @@ namespace Yamool.Net.Http
 
         internal Connection SubmitRequest(HttpRequest request)
         {
+            _idleSince = DateTime.Now;
             var created = false;
-            var connection = this.CreateOrReuseConnection(request, out created);
+            Connection connection = this.FindConnection(request, out created);
+            if (created)
+            {
+                Interlocked.Increment(ref _currentConnections);
+                if (_idleTimer == null)
+                {
+                    var timer= new Timer(this.IdleTimerCallback, null, _maxIdleTime, _maxIdleTime);
+                    if (Interlocked.CompareExchange(ref _idleTimer, timer, null) != null)
+                    {
+                        timer.Dispose();
+                    }
+                }               
+            }
             connection.SubmitRequest(request);
             return connection;
         }
@@ -256,116 +269,92 @@ namespace Yamool.Net.Http
             _certificate = server;
             _clientCertificate = client;
         }
-               
-        /// <summary>
-        /// Called this method when starting a new connection in this service point.
-        /// </summary>
-        internal void IncrementConnection()
+
+        internal void ReleaseConnection(Connection connection)
         {
-            if (Interlocked.Increment(ref _activeConnections) == 1)
+            lock (_connections)
             {
-                if (_expiringTimer != null)
+                if (_connections.Remove(connection))
                 {
-                    _expiringTimer.Dispose();
-                    _expiringTimer = null;
+                    Interlocked.Decrement(ref _currentConnections);
                 }
             }
         }
 
-        /// <summary>
-        /// Called this method when removing a connection in this service point.
-        /// </summary>
-        internal void DecrementConnection()
+        private void IdleTimerCallback(object state)
         {
-            if (Interlocked.Decrement(ref _activeConnections) == 0)
+            var now = DateTime.UtcNow;
+            var maxIdleTime = TimeSpan.FromMilliseconds(_maxIdleTime);
+            List<Connection> connectionsToClose = null;
+            lock (_connections)
             {
-                if (_activeConnections < 0)
+                foreach (var conn in _connections)
                 {
-                    Interlocked.Exchange(ref _activeConnections, 0);
+                    if (conn.Busy)
+                    {
+                        continue;
+                    }
+                    if ((now - conn.IdleSince) > maxIdleTime)
+                    {
+                        conn.TrySetBusy();
+                        if (connectionsToClose == null)
+                        {
+                            connectionsToClose = new List<Connection>();
+                        }
+                        connectionsToClose.Add(conn);
+                    }
                 }
-                _idleSince = DateTime.Now;
-                _expiringTimer = new Timer(ServicePointManager.IdleServicePointTimeoutDelegate, this, _maxIdleTime, Timeout.Infinite);
+            }
+            if (connectionsToClose != null && connectionsToClose.Count > 0)
+            {
+                foreach (var conn in connectionsToClose)
+                {
+                    conn.Close();
+                    if (Interlocked.Decrement(ref _currentConnections) <= 0)
+                    {
+                        ServicePointManager.IdleServicePointTimeout(this);
+                        var timer = Interlocked.Exchange(ref _idleTimer, null);
+                        if (timer != null)
+                        {
+                            timer.Dispose();
+                        }
+                    }
+                }
             }
         }
 
-        /// <summary>
-        /// Sets all connections to not be KeepAlive
-        /// </summary>
-        internal void ReleaseAllConnections()
-        {
-            var removedConnections = new List<Connection>(_connections.Count);
-            lock (this)
-            {
-                foreach (var connection in _connections)
-                {
-                    removedConnections.Add(connection);
-                }
-                _connections = new List<Connection>();
-            }
-            foreach (var connection in removedConnections)
-            {
-                connection.CloseOnIdle();
-            }
-        }
-
-        private Connection CreateOrReuseConnection(HttpRequest request, out bool created)
+        private Connection FindConnection(HttpRequest request, out bool created)
         {
             Connection newConnection = null;
             var freeConnectionsAvail = false;
             created = false;
-            lock (this)
+            lock (_connections)
             {
                 foreach (var currentConnection in _connections)
                 {
-                    if (currentConnection.BusyCount > 0)
+                    if (currentConnection.Busy)
                     {
                         continue;
                     }
                     freeConnectionsAvail = true;
                     newConnection = currentConnection;
-                    created = true;
                 }
-                if (!freeConnectionsAvail && this.CurrentConnections < _connectionLimit)
+                if (!freeConnectionsAvail && _currentConnections < _connectionLimit)
                 {
                     newConnection = new Connection(this);
                     _connections.Add(newConnection);
+                    created = true;
                 }
                 else
                 {
-                    if (this.CurrentConnections > _connectionLimit)
+                    if (_currentConnections > _connectionLimit)
                     {
-                        //waiting when get an available connection or throw an exception?
                         throw new InvalidOperationException("The maximum number of the service point connection has been reached.");
                     }
                 }
-                newConnection.MarkAsReserved();
+                newConnection.TrySetBusy();
             }
             return newConnection;
-        }
-
-        /// <summary>
-        /// Removes extra connections that are found when reducing the connection limit
-        /// </summary>
-        private void PruneExcesiveConnections()
-        {
-            var connectionsToClose = new List<Connection>();
-            lock (this)
-            {
-                var connectionLimit = this.ConnectionLimit;
-                if (this.CurrentConnections > connectionLimit)
-                {
-                    var numberToPrune = this.CurrentConnections - connectionLimit;
-                    for (var i = 0; i < numberToPrune; i++)
-                    {
-                        connectionsToClose.Add(_connections[i]);
-                    }
-                    _connections.RemoveRange(0, numberToPrune);
-                }
-            }
-            foreach (var connection in connectionsToClose)
-            {
-                connection.CloseOnIdle();
-            }
         }
 
         private static void PutBytes(byte[] bytes, uint v, int offset)

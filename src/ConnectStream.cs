@@ -24,7 +24,6 @@ namespace Yamool.Net.Http
         private bool _chunkEofRecvd;
         private ChunkParser _chunkParser;
         private PooledBuffer _pooledBuffer;
-        private int _shutDown;
 
         internal ConnectStream(Connection connection, ArraySegment<byte> buffer, int offset, int bufferCount, long readCount, bool chunked, HttpRequest request)
         {
@@ -246,15 +245,6 @@ namespace Yamool.Net.Http
             return readedBuffer;
         }
 
-        private void CloseInternal(bool aborting = false)
-        {
-            if (Interlocked.Increment(ref _shutDown) > 1)
-            {
-                return;
-            }
-            _connection.Free();
-        }
-
         private int FillFromBufferedData(byte[] buffer, int offset, int count)
         {
             if (_readBufferSize == 0)
@@ -273,6 +263,7 @@ namespace Yamool.Net.Http
             if (disposing && !_disposed)
             {
                 _disposed = true;
+                _connection.Close(true);
             }
             base.Dispose(disposing);
         }

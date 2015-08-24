@@ -12,8 +12,7 @@ namespace Yamool.Net.Http.Tests
     {
         static void Main()
         {
-            Task.Factory.StartNew(() => Test());
-            //Task.Factory.StartNew(() => Test2());          
+            Task.Factory.StartNew(() => Test());       
             Console.ReadLine();
         }
 
@@ -33,7 +32,7 @@ namespace Yamool.Net.Http.Tests
                 while ((count =await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                 {
                     sum += count;
-                    Console.WriteLine(count);
+                    //Console.WriteLine(count);
                 }
             }
             watcher.Stop();
@@ -41,18 +40,19 @@ namespace Yamool.Net.Http.Tests
 
             Console.WriteLine("elapsed[1]:" + watcher.Elapsed.TotalMilliseconds + "'ms");
 
-            //Test2();
+            Test2();
         }
 
         private static async void Test2()
         {
             var watcher = new System.Diagnostics.Stopwatch();
             watcher.Start();
-            var request = new HttpRequest(new Uri("http://music.163.com/"));
+            var request = new HttpRequest(new Uri("http://www.baidu.com/"));
             request.KeepAlive = true;
             request.CookieContainer = new CookieContainer();
             using (var response = await request.SendAsync())
             {
+
                 var sum = 0;
                 using (var stream = response.GetResponseStream())
                 {
@@ -64,9 +64,9 @@ namespace Yamool.Net.Http.Tests
                         // Console.WriteLine(count);
                     }
                 }
-                Console.WriteLine("#1 total " + sum + " bytes");
+                Console.WriteLine("#2 total " + sum + " bytes");
             }
-            watcher.Stop();       
+            watcher.Stop();
             Console.WriteLine("elapsed[1]:" + watcher.Elapsed.TotalMilliseconds + "'ms");
         }
     }

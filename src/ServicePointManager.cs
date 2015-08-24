@@ -22,7 +22,6 @@ namespace Yamool.Net.Http
         internal static bool _tcp_keepalive;
         internal static int _tcp_keepalive_time;
         internal static int _tcp_keepalive_interval;
-        internal static readonly TimerCallback _idleServicePointTimeoutDelegate = new TimerCallback(IdleServicePointTimeoutCallback);
 
         /// <summary>
         /// Gets or sets the maximum number of concurrent connections allowed by a <see cref="ServicePoint"/> object.
@@ -139,14 +138,6 @@ namespace Yamool.Net.Http
             }
         }
 
-        internal static TimerCallback IdleServicePointTimeoutDelegate
-        {
-            get
-            {
-                return _idleServicePointTimeoutDelegate;
-            }
-        }
-
         /// <summary>
         /// Enables or disables the keep-alive option on a TCP connection.
         /// </summary>
@@ -209,14 +200,14 @@ namespace Yamool.Net.Http
             }, false)).Value;
         }
 
-        private static void IdleServicePointTimeoutCallback(object state)
+        internal static bool IdleServicePointTimeout(ServicePoint servicePoint)
         {
-            var servicePoint = (ServicePoint)state;
             Lazy<ServicePoint> idleServicePoint = null;
             if (_servicePoints.TryRemove(servicePoint.LookupString, out idleServicePoint))
             {
-                servicePoint.ReleaseAllConnections();
+                return true;
             }
+            return false;
         }
 
         private static string MakeQueryString(Uri address)

@@ -445,10 +445,6 @@ namespace Yamool.Net.Http
         {
             var leftBytes = _bufferSize - _bufferCurrentPos;
             var readSize = _connection.Buffer.Length - leftBytes;
-            if (_readState == ReadState.ChunkLength)
-            {
-                readSize = Math.Min(12, readSize);
-            }
             Buffer.BlockCopy(_buffer.Array, _bufferCurrentPos, _buffer.Array, _buffer.Offset, leftBytes);
             _buffer = await _connection.ReadPooledBufferAsync(_buffer.Offset + leftBytes, readSize);
             _bufferSize = _buffer.Count;

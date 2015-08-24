@@ -23,7 +23,7 @@ namespace Yamool.Net.Http
         }
 
         private const string SP = " ";
-        private const int RequestLineConstantSize = 12;
+        private const int RequestLineConstantSize = 10;
         internal const string GZipHeader = "gzip";
         internal const string DeflateHeader = "deflate";
         internal const string ChunkedHeader = "chunked";
@@ -565,7 +565,7 @@ namespace Yamool.Net.Http
            }
            catch
            {
-               connection.CloseOnIdle();
+               connection.Close();
                throw;
            }
         }
@@ -626,7 +626,6 @@ namespace Yamool.Net.Http
             }
             if (!requestDone)
             {
-                //not finished.
                 throw new HttpRequestException("The request not finished.");
             }
             if (this.Redirect((HttpStatusCode)_statusLineValues.StatusCode))
@@ -635,7 +634,7 @@ namespace Yamool.Net.Http
                 {
                     var previous_connection = connection;
                     connection = this.FindServicePoint(true).SubmitRequest(this);
-                    previous_connection.CloseOnIdle();
+                    previous_connection.Close(true);
                 }
                 return await this.SendRequestAsync(connection);
             }
@@ -1172,9 +1171,10 @@ namespace Yamool.Net.Http
             writeBuffer[offset++] = (byte)'\r';
             writeBuffer[offset++] = (byte)'\n';
             Encoding.UTF8.GetBytes(requestHeadersString, 0, requestHeadersString.Length, writeBuffer, offset);
+            offset += requestHeadersString.Length;
             //transfer data
             var beginReadIndex = 0;
-            var leftWriteBytes = writeBytesCount;
+            var leftWriteBytes = offset;
             while (leftWriteBytes > 0)
             {
                 var count = Math.Min(writeBytesCount - beginReadIndex, connection.Buffer.Length);

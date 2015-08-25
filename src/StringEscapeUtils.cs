@@ -1,17 +1,13 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
-     using System;
+    using System;
     using System.Collections.Generic;
     using System.Text;
     using System.IO;
 
-    /// <summary>
-    /// Escapes and unescapes string.
-    /// </summary>
     internal static class StringEscapeUtils
     {
         #region sequences
@@ -78,7 +74,7 @@ namespace Yamool.Net.Http
                     {
                         sb.Append(ch);
                     }
-                }                            
+                }
             }
             return sb.ToString();
         }

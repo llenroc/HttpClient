@@ -1,6 +1,5 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
@@ -9,7 +8,7 @@ namespace Yamool.Net.Http
     /// <summary>
     /// Represents the Http Header Name
     /// </summary>
-    internal class KnownHeaderNames
+    public class HttpHeaderNames
     {
         public const string Accept = "Accept";
         public const string AcceptCharset = "Accept-Charset";

@@ -1,21 +1,19 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
     using System;
     using System.Collections.Specialized;
 
+    //http://en.wikipedia.org/wiki/List_of_HTTP_header_fields
+
     /// <summary>
     /// Represents the collection of Request Headers.
     /// </summary>
-    /// <remarks>
-    /// http://en.wikipedia.org/wiki/List_of_HTTP_header_fields
-    /// </remarks>
     public sealed class HttpRequestHeaders : HttpHeaders
     {
-        public HttpRequestHeaders() { }        
+        public HttpRequestHeaders() { }
 
         /// <summary>
         /// Content-Types that are acceptable for the response
@@ -24,11 +22,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Accept];
+                return this[HttpHeaderNames.Accept];
             }
             set
             {
-                this[KnownHeaderNames.Accept] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Accept, value);
             }
         }
 
@@ -39,11 +37,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.AcceptCharset];
+                return this[HttpHeaderNames.AcceptCharset];
             }
             set
             {
-                this[KnownHeaderNames.AcceptCharset] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.AcceptCharset, value);
             }
         }
 
@@ -54,11 +52,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.AcceptEncoding];
+                return this[HttpHeaderNames.AcceptEncoding];
             }
             set
             {
-                this[KnownHeaderNames.AcceptEncoding] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.AcceptEncoding, value);
             }
         }
 
@@ -69,11 +67,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.AcceptLanguage];
+                return this[HttpHeaderNames.AcceptLanguage];
             }
             set
             {
-                this[KnownHeaderNames.AcceptLanguage] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.AcceptLanguage, value);
             }
         }
 
@@ -84,11 +82,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Authorization];
+                return this[HttpHeaderNames.Authorization];
             }
             set
             {
-                this[KnownHeaderNames.Authorization] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Authorization, value);
             }
         }
 
@@ -99,11 +97,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.CacheControl];
+                return this[HttpHeaderNames.CacheControl];
             }
             set
             {
-                this[KnownHeaderNames.CacheControl] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.CacheControl, value);
             }
         }
 
@@ -114,11 +112,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.ContentType];
+                return this[HttpHeaderNames.ContentType];
             }
             set
             {
-                this[KnownHeaderNames.ContentType] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.ContentType, value);
             }
         }
         /// <summary>
@@ -128,11 +126,19 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Connection];
+                return this[HttpHeaderNames.Connection];
             }
             set
             {
-                this[KnownHeaderNames.Connection] = value;
+                if (value == null)
+                {
+                    throw new ArgumentNullException("value");
+                }
+                if (value.IndexOf("keep-alive", StringComparison.OrdinalIgnoreCase) != -1 || value.IndexOf("close", StringComparison.OrdinalIgnoreCase) != -1)
+                {
+                    throw new ArgumentException("connection value is invalid.");
+                }
+                this.SetSpecialHeaders(HttpHeaderNames.Connection, value);
             }
         }
 
@@ -143,11 +149,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this.GetDateHeaderHelper(KnownHeaderNames.Date);
+                return this.GetDateHeaderHelper(HttpHeaderNames.Date);
             }
             set
             {
-                this.SetDateHeaderHelper(KnownHeaderNames.Date, value);
+                this.SetDateHeaderHelper(HttpHeaderNames.Date, value);
             }
         }
 
@@ -158,11 +164,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Expect];
+                return this[HttpHeaderNames.Expect];
             }
             set
             {
-                this[KnownHeaderNames.Expect] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Expect, value);
             }
         }
 
@@ -173,11 +179,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.From];
+                return this[HttpHeaderNames.From];
             }
             set
             {
-                this[KnownHeaderNames.From] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.From, value);
             }
         }
 
@@ -188,11 +194,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Host];
+                return this[HttpHeaderNames.Host];
             }
             set
             {
-                this[KnownHeaderNames.Host] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Host, value);
             }
         }
 
@@ -206,26 +212,29 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.IfMatch];
+                return this[HttpHeaderNames.IfMatch];
             }
             set
             {
-                this[KnownHeaderNames.IfMatch] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.IfMatch, value);
             }
         }
 
         /// <summary>
         /// Allows a 304 Not Modified to be returned if content is unchanged
         /// </summary>
-        public DateTime IfModifiedSince
+        public DateTime? IfModifiedSince
         {
             get
             {
-                return this.GetDateHeaderHelper(KnownHeaderNames.IfModifiedSince);
+                var value = this.GetDateHeaderHelper(HttpHeaderNames.IfModifiedSince);
+                if (value == DateTime.MinValue)
+                    return null;
+                return value;
             }
             set
             {
-                this.SetDateHeaderHelper(KnownHeaderNames.IfModifiedSince, value);
+                this.SetDateHeaderHelper(HttpHeaderNames.IfModifiedSince, value.Value);
             }
         }
 
@@ -236,11 +245,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.IfNoneMatch];
+                return this[HttpHeaderNames.IfNoneMatch];
             }
             set
             {
-                this[KnownHeaderNames.IfNoneMatch] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.IfNoneMatch, value);
             }
         }
 
@@ -251,11 +260,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.IfRange];
+                return this[HttpHeaderNames.IfRange];
             }
             set
             {
-                this[KnownHeaderNames.IfRange] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.IfRange, value);
             }
         }
 
@@ -266,11 +275,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.IfUnmodifiedSince];
+                return this[HttpHeaderNames.IfUnmodifiedSince];
             }
             set
             {
-                this[KnownHeaderNames.IfUnmodifiedSince] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.IfUnmodifiedSince, value);
             }
         }
 
@@ -281,11 +290,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.MaxForwards];
+                return this[HttpHeaderNames.MaxForwards];
             }
             set
             {
-                this[KnownHeaderNames.MaxForwards] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.MaxForwards, value);
             }
         }
 
@@ -296,11 +305,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Pragma];
+                return this[HttpHeaderNames.Pragma];
             }
             set
             {
-                this[KnownHeaderNames.Pragma] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Pragma, value);
             }
         }
 
@@ -311,11 +320,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.ProxyAuthorization];
+                return this[HttpHeaderNames.ProxyAuthorization];
             }
             set
             {
-                this[KnownHeaderNames.ProxyAuthorization] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.ProxyAuthorization, value);
             }
         }
 
@@ -326,26 +335,26 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Range];
+                return this[HttpHeaderNames.Range];
             }
             set
             {
-                this[KnownHeaderNames.Range] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Range, value);
             }
         }
 
         /// <summary>
         /// This is the address of the previous web page from which a link to the currently requested page was followed.
         /// </summary>
-        public string Referrer
+        public string Referer
         {
             get
             {
-                return this[KnownHeaderNames.Referer];
+                return this[HttpHeaderNames.Referer];
             }
             set
             {
-                this[KnownHeaderNames.Referer] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Referer, value);
             }
         }
 
@@ -358,14 +367,29 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.TE];
+                return this[HttpHeaderNames.TE];
             }
             set
             {
-                this[KnownHeaderNames.TE] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.TE, value);
             }
         }
 
+        public string TransferEncoding
+        {
+            get
+            {
+                return this[HttpHeaderNames.TransferEncoding];
+            }
+            set
+            {
+                if (value == null)
+                {
+                    throw new ArgumentNullException("value");
+                }
+                this.SetSpecialHeaders(HttpHeaderNames.TransferEncoding, value);
+            }
+        }
 
         /// <summary>
         /// Ask the server to upgrade to another protocol.
@@ -374,11 +398,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Upgrade];
+                return this[HttpHeaderNames.Upgrade];
             }
             set
             {
-                this[KnownHeaderNames.Upgrade] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Upgrade, value);
             }
         }
 
@@ -389,11 +413,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.UserAgent];
+                return this[HttpHeaderNames.UserAgent];
             }
             set
             {
-                this[KnownHeaderNames.UserAgent] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.UserAgent, value);
             }
         }
 
@@ -404,11 +428,11 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Via];
+                return this[HttpHeaderNames.Via];
             }
             set
             {
-                this[KnownHeaderNames.Via] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Via, value);
             }
         }
 
@@ -419,12 +443,17 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Warning];
+                return this[HttpHeaderNames.Warning];
             }
             set
             {
-                this[KnownHeaderNames.Warning] = value;
+                this.SetSpecialHeaders(HttpHeaderNames.Warning, value);
             }
-        }     
+        }
+
+        public override string ToString()
+        {
+            return this.GetAsString(false, false);
+        }
     }
 }

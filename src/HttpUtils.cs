@@ -1,6 +1,5 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
@@ -8,6 +7,7 @@ namespace Yamool.Net.Http
     using System.Collections.Specialized;    
     using System.Globalization;
     using System.IO;
+    using System.Linq;
     using System.Text;
     using System.Net;
 
@@ -16,6 +16,18 @@ namespace Yamool.Net.Http
     /// </summary>
     public static class HttpUtils
     {
+        private class HttpQSCollection : NameValueCollection
+        {
+            public override string ToString()
+            {
+                if (this.Count == 0)
+                {
+                    return string.Empty;
+                }
+                return string.Join("&", this.AllKeys.Select(k => k + "=" + UrlEncode(this[k])));
+            }
+        }
+
         /// <summary>
         /// Parses a query string into a <see cref="NameValueCollection"/> using UTF8 encoding.
         /// </summary>
@@ -34,25 +46,77 @@ namespace Yamool.Net.Http
         /// <returns></returns>
         public static NameValueCollection ParseQueryString(string query, Encoding encoding)
         {
-            if (query == null)
-            {
-                throw new ArgumentNullException("query");
-            }
             if (encoding == null)
             {
                 throw new ArgumentNullException("encoding");
             }
-            if ((query.Length > 0) && (query[0] == '?'))
+            if (string.IsNullOrEmpty(query) || (query.Length == 1 && query[0] == '?'))
             {
-                query = query.Substring(1);
+                return new HttpQSCollection();
             }
-            return new HttpValueCollection(query, false, true, encoding);
+            var result = new HttpQSCollection();
+            ParseQueryString(query, encoding, result);
+            return result;
         }
 
-        internal static string Date2String(DateTime D)
+        internal static void ParseQueryString(string query, Encoding encoding, NameValueCollection result)
         {
-            DateTimeFormatInfo provider = new DateTimeFormatInfo();
-            return D.ToUniversalTime().ToString("R", provider);
+            var decoded = HtmlDecode(query);
+            var decodedLength = decoded.Length;
+
+            var namePos = 0;
+            var first = true;
+            while (namePos <= decodedLength)
+            {
+                var valuePos = -1;
+                var valueEnd = -1;
+                for (var q = namePos; q < decodedLength; q++)
+                {
+                    if (valuePos == -1 && decoded[q] == '=')
+                    {
+                        valuePos = q + 1;
+                    }
+                    else if (decoded[q] == '&')
+                    {
+                        valueEnd = q;
+                        break;
+                    }
+                }
+
+                if (first)
+                {
+                    first = false;
+                    if (decoded[namePos] == '?')
+                    {
+                        namePos++;
+                    }
+                }
+
+                string name, value;
+                if (valuePos == -1)
+                {
+                    name = null;
+                    valuePos = namePos;
+                }
+                else
+                {
+                    name = UrlDecode(decoded.Substring(namePos, valuePos - namePos - 1), encoding);
+                }
+                if (valueEnd < 0)
+                {
+                    namePos = -1;
+                    valueEnd = decoded.Length;
+                }
+                else
+                {
+                    namePos = valueEnd + 1;
+                }
+                value = UrlDecode(decoded.Substring(valuePos, valueEnd - valuePos), encoding);
+
+                result.Add(name, value);
+                if (namePos == -1)
+                    break;
+            }
         }
 
         /// <summary>
@@ -62,11 +126,6 @@ namespace Yamool.Net.Http
         /// <returns>he encoded text.</returns>
         public static string HtmlEncode(string value)
         {
-            //if (string.IsNullOrEmpty(value))
-            //    return value;
-            //var output = new StringWriter(System.Globalization.CultureInfo.InvariantCulture);
-            //WebUtility.HtmlEncode(value, output);
-            //return output.ToString();
             return WebUtility.HtmlEncode(value);
         }
 
@@ -77,92 +136,59 @@ namespace Yamool.Net.Http
         /// <returns>he decoded text.</returns>
         public static string HtmlDecode(string value)
         {
-            if (string.IsNullOrEmpty(value))
-                return value;
-            //check a Character Entities
-            var index = value.IndexOf('&');
-            if (index < 0)
-            {
-                return value;
-            }
-            //check a again 
-            if (value.IndexOf(';', index) <= 0)
-            {
-                return value;
-            }
-            var output = new StringWriter(System.Globalization.CultureInfo.InvariantCulture);
-            WebUtility.HtmlDecode(value, output);
-            return output.ToString();
+           return WebUtility.HtmlDecode(value);
         }
 
         /// <summary>
         /// Encodes a URL string.
         /// </summary>
-        /// <param name="str">The text to encode.</param>
+        /// <param name="value">The text to encode.</param>
         /// <returns>An encoded string.</returns>
-        public static string UrlEncode(string str)
+        public static string UrlEncode(string value)
         {
-            if (str == null)
-            {
-                return null;
-            }
-            return UrlEncode(str, Encoding.UTF8);
+            return UrlEncode(value, Encoding.UTF8);
         }
 
         /// <summary>
         /// Encodes a URL string using the specified encoding object.
         /// </summary>
-        /// <param name="str">The text to encode.</param>
-        /// <param name="e">The Encoding object that specifies the encoding scheme.</param>
+        /// <param name="value">The text to encode.</param>
+        /// <param name="encoding">The Encoding object that specifies the encoding scheme.</param>
         /// <returns>An encoded string.</returns>
-        public static string UrlEncode(string str, Encoding e)
+        public static string UrlEncode(string value, Encoding encoding)
         {
-            if (str == null)
+            if (string.IsNullOrEmpty(value))
             {
-                return null;
+                return value;
             }
-            return Encoding.ASCII.GetString(UrlEncodeToBytes(str, e));
+            var bytes = encoding.GetBytes(value);
+            return Encoding.ASCII.GetString(HttpEncoder.UrlEncode(bytes, 0, bytes.Length));
         }
 
-        /// <summary>
-        /// Converts a string into a URL-encoded array of bytes using the specified encoding object.
-        /// </summary>
-        /// <param name="str">The string to encode</param>
-        /// <param name="e">The Encoding that specifies the encoding scheme.</param>
-        /// <returns>An encoded array of bytes.</returns>
-        public static byte[] UrlEncodeToBytes(string str, Encoding e)
-        {
-            if (str == null)
-            {
-                return null;
-            }
-            byte[] bytes = e.GetBytes(str);
-            return HttpEncoder.UrlEncode(bytes, 0, bytes.Length);
-        }
 
         /// <summary>
         /// Converts a string that has been encoded for transmission in a URL into a decoded string.
         /// </summary>
-        /// <param name="str">The string to decode.</param>
+        /// <param name="value">The string to decode.</param>
         /// <returns>A decoded string.</returns>
-        public static string UrlDecode(string str)
-        {
-            if (str == null)
-            {
-                return null;
-            }
-            return UrlDecode(str, Encoding.UTF8);
+        public static string UrlDecode(string value)
+        {           
+            return UrlDecode(value, Encoding.UTF8);
         }
 
         /// <summary>
         /// Converts a URL-encoded string into a decoded string, using the specified encoding object.
         /// </summary>
         /// <param name="str">The string to decode.</param>
-        /// <param name="e">The Encoding that specifies the decoding scheme.</param>
+        /// <param name="encoding">The Encoding that specifies the decoding scheme.</param>
         /// <returns>A decoded string.</returns>
-        public static string UrlDecode(string str, Encoding e)
+        public static string UrlDecode(string value, Encoding encoding)
         {
-            return HttpEncoder.UrlDecode(str, e);
+            if (string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+            return HttpEncoder.UrlDecode(value, encoding);
         }
 
         public static string EncodingWebFormData(NameValueCollection formData)
@@ -182,39 +208,43 @@ namespace Yamool.Net.Http
         }
 
         /// <summary>
-        /// unescape a specified string.
+        /// escape a specified string.
         /// </summary>
-        /// <param name="input">the input string to unescape.</param>
-        /// <returns>a new unescape string.</returns>
-        public static string Unescape(string input)
+        /// <param name="stringToEscape">the input string to escape</param>
+        /// <returns>a new escape string.</returns>
+        public static string EscapeDataString(string stringToEscape)
         {
-            if (input == null)
-                return null;
-            string result = null;
-            using (var reader = new StringReader(input))
+            if (string.IsNullOrEmpty(stringToEscape))
             {
-                result = StringEscapeUtils.Unescape(reader, input.Length);
-                reader.Close();
+                return stringToEscape;
             }
-            return result;
+            using (var reader = new StringReader(stringToEscape))
+            {
+                return StringEscapeUtils.Escape(reader);
+            }
         }
 
         /// <summary>
-        /// escape a specified string.
+        /// unescape a specified string.
         /// </summary>
-        /// <param name="input">the input string to escape</param>
-        /// <returns>a new escape string.</returns>
-        public static string Escape(string input)
+        /// <param name="stringToUnescape">the input string to unescape.</param>
+        /// <returns>a new unescape string.</returns>
+        public static string UnescapeDataString(string stringToUnescape)
         {
-            if (input == null)
-                return null;
-            string result = null;
-            using (var reader = new StringReader(input))
+            if (string.IsNullOrEmpty(stringToUnescape))
             {
-                result = StringEscapeUtils.Escape(reader);
-                reader.Close();
+                return stringToUnescape;
             }
-            return result;
+            using (var reader = new StringReader(stringToUnescape))
+            {
+                return StringEscapeUtils.Unescape(reader, stringToUnescape.Length);
+            }
+        }
+
+        internal static string Date2String(DateTime D)
+        {
+            DateTimeFormatInfo provider = new DateTimeFormatInfo();
+            return D.ToUniversalTime().ToString("R", provider);
         }
 
         internal static DateTime String2Date(string S)
@@ -227,30 +257,9 @@ namespace Yamool.Net.Http
             return time;
         }        
 
-        /// <summary>
-        /// Convert a relative path to the absolute url.
-        /// </summary>
-        /// <param name="url">the original request url.</param>
-        /// <param name="relativeUrl">the relative url.</param>
-        /// <returns></returns>
-        internal static string ToAbsoluteUrl(Uri url, string relativeUrl)
+        internal static bool IsHttpUri(Uri uri)
         {
-            //is a relative path    
-            if (relativeUrl[0] == '/')
-            {
-                return url.GetComponents(UriComponents.Scheme | UriComponents.Host, UriFormat.UriEscaped) + relativeUrl;
-            }
-            else
-            {
-                var index = url.LocalPath.IndexOf(".");
-                var requestUrl = url.GetComponents(UriComponents.Scheme | UriComponents.Host | UriComponents.Path, UriFormat.UriEscaped);
-                //if the reques url with file name.
-                if (index > 0)
-                {
-                    requestUrl = requestUrl.Substring(0, requestUrl.LastIndexOf("/"));
-                }
-                return requestUrl + "/" + relativeUrl;
-            }
+            return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
         }
     }
 }

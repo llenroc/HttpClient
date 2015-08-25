@@ -1,527 +1,111 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
     using System;
     using System.IO;
+    using System.Linq;
     using System.Net;
     using System.Security.Cryptography.X509Certificates;
     using System.Text;
     using System.Threading;
     using System.Threading.Tasks;
 
-    /// <summary>
-    /// Provides several methods for sending HTTP requests and receiving HTTP responses from a resources by a URI.
-    /// </summary>
     public class HttpRequest
     {
+        private enum ReadState
+        {
+            Start,
+            StatusLine, // about to parse status line
+            Headers,    // reading headers
+            Data        // now read data
+        }
+
         private const string SP = " ";
-        private const string CRLF = "\r\n";
-        private const string HttpVersion = "1.1";
+        private const int RequestLineConstantSize = 10;
+        internal const string GZipHeader = "gzip";
+        internal const string DeflateHeader = "deflate";
+        internal const string ChunkedHeader = "chunked";
+        private const int BeforeVersionNumbers = 0;
+        private const int MajorVersionNumber = 1;
+        private const int MinorVersionNumber = 2;
+        private const int StatusCodeNumber = 3;
+        private const int AfterStatusCode = 4;
+        private const int AfterCarriageReturn = 5;
+        private const string BeforeVersionNumberBytes = "HTTP/";
 
-        #region vars
-        private int _timeout;
-        private long _maximumResponseContentLength;
-        private int _maximumAutomaticRedirections;
+        private static readonly byte[] HttpBytes = new byte[] { 72, 84, 84, 80, 47 };// HTTP/
         private bool _allowAutoRedirect;
-        private int _buffSize;
-        //can auto use decompress-mode for response stream.
-        private bool _automaticDecompression;
-        //proxy
-        private IWebProxy _proxy;
+        private int _autoRedirects;
+        private DecompressionMethods _automaticDecompression;
         private X509CertificateCollection _clientCertificates;
-
-        /// <summary>
-        /// the current request uri,this possible not equal to requesturi
-        /// </summary>
-        internal Uri _uri;
-
-        //Used by POST
-        /// <summary>
-        /// the content body of request that should sending.
-        /// </summary>
-        private byte[] _submitData;
-        /// <summary>
-        /// the entity request data that include a header data and content body data.
-        /// </summary>
-        private byte[] _writeBuffer;
-
-        private RequestStream _submitWriteStream;
         private long _contentLength;
+        private ICredentials _credentials;
+        private CookieContainer _cookieContainer;        
+        private HttpWriteMode _httpWriteMode;
+        private bool _keepAlive;
+        private int _maxAutomaticRedirections;
+        private int _maximumResponseHeadersLength;
+        private int _requestSubmitted;
+        private IWebProxy _proxy;
+        private Uri _originUri;
+        private HttpMethod _originMethod;
+        private bool _sendChunked;
+        private int _timeout;
+        private Uri _uri;
+        private HttpRequestHeaders _headers;
+        private Uri _hostUri;
+        private HttpMethod _method;
+        private HttpVersion _version;
+        private long _startTimestamp;
+        private ServicePoint _servicePoint;
+        private bool _redirectedToDifferentHost;
+        private int _totalResponseHeadersLength;
+        private int _statusState;
+        private ReadState _readState;
+        private StatusLineValues _statusLineValues;
+        private HttpResponseHeaders _responseHeaders;        
+        private CancellationToken _requestCancellationToken;
+        private HttpContent _submitContent;
 
-        //occures when start request
-        private bool _requestSubmitted;
-        //socket
-        private ITcpChannel _connectChannel;
-      
-        private byte[] _buffer;
-        private int _submitBytesTransferred;
-        private int _redirectCount;        
+        public HttpRequest(Uri uri) : this(HttpMethod.Get, uri, HttpVersion.HTTP11) { }
 
-        /// <summary>
-        /// The state of the current request operation.
-        /// 0:init ; 1:requesting 2:completed 3:timeout 4:canceled(aborted)       
-        /// </summary>
-        private int _state;
-        private HttpRequestTask _task;
-        private HttpResponse _response;       
-        #endregion
+        public HttpRequest(HttpMethod method, Uri uri) : this(method, uri,HttpVersion.HTTP11) { }
 
-        #region ctors
-        public HttpRequest(string requestUri) : this(new Uri(requestUri)) { }
-
-        public HttpRequest(Uri requestUri)
-        {            
-            this.InitRequest(requestUri);
-        }
-        #endregion
-
-        /// <summary>
-        /// Cancels a request operation to access an internet resource.
-        /// </summary>
-        public void Abort()
+        public HttpRequest(HttpMethod method, Uri uri, HttpVersion version)
         {
-            if (this.HaveResponse)
-            {
-                return;
-            }
-            _task.SetCanceled();
+            _allowAutoRedirect = true;
+            _automaticDecompression = DecompressionMethods.None;
+            _contentLength = -1L;
+            _httpWriteMode = HttpWriteMode.Unknown;
+            _keepAlive = true;
+            _maximumResponseHeadersLength = 8190;
+            _maxAutomaticRedirections = 50;
+            _originUri = uri;
+            _originMethod = method;
+            _timeout = 100000;
+            _uri = _originUri;
+            _method = _originMethod;
+            _version = version;
+            _sendChunked = false;
+            _headers = new HttpRequestHeaders();
+            _startTimestamp = DateTime.UtcNow.Ticks;          
         }
 
-        /// <summary>
-        /// Gets a <see cref="Stream"/> object to use to write request data.
-        /// </summary>
-        /// <returns>A <see cref="Stream"/> to use to write request data.</returns>
-        public Stream GetRequestStream()
-        {
-            this.CheckProtocol(true);
-            if (this.RequestSubmitted)
-            {
-                throw new InvalidOperationException("This operation cannot be performed after the request has been submitted.");
-            }
-            _submitWriteStream = new RequestStream(this);
-            return _submitWriteStream;
-        }
-
-        /// <summary>
-        /// Sending a request and returns a <see cref="HttpResponse"/> object in an asynchronous operation.
-        /// </summary>
-        /// <returns>The task object representing the asynchronous operation.</returns>
-        public Task<HttpResponse> GetResponseAsync()
-        {
-            if (this.HaveResponse)
-            {
-                return Task.FromResult(_response);
-            }
-            _task = new HttpRequestTask(this.OnCompleted);            
-            try
-            {
-                if (!this.SetRequestSubmitted())
-                {
-                    this.CheckProtocol(false);
-                }              
-                //if the request stream not close.
-                if (_submitWriteStream != null && !_submitWriteStream.Closed)
-                {
-                    _submitWriteStream.Close();
-                }
-                else if (_submitWriteStream == null && this.HasEntityBody)
-                {
-                    throw new ProtocolViolationException("You must provide a request body if you set ContentLength>0 or SendChunked==true.");
-                }
-                if (Interlocked.CompareExchange(ref _state, 1, 0) == 0)
-                {
-                   
-                    this.GetServiceEndPointAsync().ContinueWith((Task<EndPoint> task) =>
-                    {
-                        if (task.IsFaulted)
-                        {
-                            _task.SetException(task.Exception.GetBaseException());
-                            return;
-                        }
-                        var remoteEP = task.Result;
-                        _task.SetTimeout(this.Timeout);
-                        //start an async operation 
-                        _connectChannel = this.CreateTcpChannel(this.IsSecureRequest);
-                        _connectChannel.Completed += channel_Completed;
-                        _connectChannel.Error += channel_Error;
-                        _connectChannel.Connect(remoteEP);
-
-                    }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);                   
-                }
-                else
-                {
-                    _task.SetResult(_response);
-                }
-            }
-            catch (Exception ex)
-            {
-                this.HandleError(ex);
-            }
-            return _task.Task;
-        }        
-
-        private void channel_Completed(object sender, ChannelEventArgs e)
-        {
-            if (this.HaveResponse)
-            {
-                return;
-            }
-            try
-            {
-                switch (e.LastOperation)
-                {
-                    case ChannelOperation.Connect:
-                        {
-                            this.SetRequestHeaders();
-                            //build a entity message of request.
-                            var requestData = this.GetRequestHeadersBytes();
-                            if (this.HasEntityBody)
-                            {
-                                var buffer = new byte[requestData.Length + this.ContentLength];
-                                Buffer.BlockCopy(requestData, 0, buffer, 0, requestData.Length);
-                                Buffer.BlockCopy(this._submitData, 0, buffer, requestData.Length, (int)this.ContentLength);
-                                _writeBuffer = buffer;
-                            }
-                            else
-                            {
-                                _writeBuffer = requestData;
-                            }
-                            var count = Math.Min(this.BuffSize, requestData.Length);
-                            var offset = _submitBytesTransferred;
-                            _connectChannel.Send(_writeBuffer, offset, count);
-                            break;
-                        }
-                    case ChannelOperation.Send:
-                        {
-                            _submitBytesTransferred += e.BytesTransferred;
-                            var remainBytesCount = _writeBuffer.Length - _submitBytesTransferred;
-                            if (remainBytesCount > 0)
-                            {
-                                var count = Math.Min(this.BuffSize, remainBytesCount);
-                                var offset = _submitBytesTransferred;
-                                _connectChannel.Send(_writeBuffer, offset, count);
-                            }
-                            else
-                            {
-                                _connectChannel.Receive(_buffer, 0, this.BuffSize);
-                            }
-                            break;
-                        }
-                    case ChannelOperation.Receive:
-                        {
-                            //the remote server ask close connection.
-                            if (e.BytesTransferred == 0)
-                            {
-                                _task.SetResult(_response);
-                            }
-                            else
-                            {
-                                this.ProcessReceivedBytes(e.Buffer, 0, e.BytesTransferred);
-                            }
-                            break;
-                        }
-                }
-            }
-            catch (Exception ex)
-            {
-                this.HandleError(ex);
-            }
-        }
-
-        private void channel_Error(object sender, ChannelEventArgs e)
-        {
-            this.HandleError(e.LastException);
-        }
-
-        private void HandleError(Exception ex)
-        {
-            if (_state == 1)
-            {
-                if (_response != null)
-                {
-                    _response.Close();
-                }
-                this._task.SetException(ex);
-            }
-        }
-
-        /// <summary>
-        /// Set a content body of request that send with HTTP request.
-        /// </summary>
-        internal void SetSubmitRequestStream(byte[] requestData)
-        {
-            //set the content length of data.
-            this._contentLength = requestData.LongLength;
-            this._submitData = requestData;
-        }
-
-        /// <summary>
-        /// Occures when received data from remote host.
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="args"></param>
-        private void ProcessReceivedBytes(byte[] buffer, int offset, int count)
-        {
-            //check a response object whether is created in current request operation.            
-            if (_response == null)
-            {
-                _response = new HttpResponse(_uri, this.Method.Method, this.AutomaticDecompression);
-            }
-            //write a content body from server to response
-            _response.WriteResponse(_buffer, offset, count);
-            if (_response.InternalPeekCompleted || _response.IsHeaderReady && this.Method.ExpectNoContentResponse)
-            {
-                _task.SetResult(_response);
-                return;
-            }
-            if (_maximumResponseContentLength > 0 && _response.ContentBodyLength > _maximumResponseContentLength)
-            {
-                new HttpException(HttpExceptionStatus.MessageLengthLimitExceeded, "Maximum content length exceeded allowed maximum response length.");
-            }
-            //location redirection
-            if (_response.StatusCode == HttpStatusCode.Found || _response.StatusCode == HttpStatusCode.MovedPermanently || _response.StatusCode == HttpStatusCode.SeeOther)
-            {
-                if (!_allowAutoRedirect)
-                {
-                    _task.SetResult(_response);
-                }
-                //if a redirect time greater than then the maximum number of redirect
-                if ((_redirectCount++) >= _maximumAutomaticRedirections)
-                {
-                    new HttpException(HttpExceptionStatus.RedirectionCountExceeded, "Maximum redirection count exceeded.");
-                }
-                //switch to new url     
-                var location = _response.Headers.Location;
-                if (string.IsNullOrEmpty(location))
-                {
-                    new ProtocolViolationException("The value of location of header is empty.");
-                }
-                if (!(location.StartsWith("http")))
-                {
-                    location = HttpUtils.ToAbsoluteUrl(_uri, location);
-                }
-                //change a http verb is GET?
-                this.Method = HttpMethod.Get;
-                _submitBytesTransferred = 0;
-                _submitData = null;
-                _contentLength = 0;
-                //release current response object
-                _response.Close();
-                _response = null;               
-
-                this.LocationRedirect(new Uri(location));
-                return;
-            }
-            _connectChannel.Receive(_buffer, 0, this.BuffSize);            
-        }
-
-        private void LocationRedirect(Uri newUri)
-        {            
-            //if http protocol is different           
-            //if host or port is differnt 
-            if (string.CompareOrdinal(_uri.Scheme, newUri.Scheme) != 0 || string.CompareOrdinal(_uri.Host, newUri.Host) != 0 || _uri.Port != newUri.Port)
-            {
-                _uri = newUri;
-                this.GetServiceEndPointAsync().ContinueWith((Task<EndPoint> task) =>
-                {
-                    if (task.IsFaulted)
-                    {
-                        _task.SetException(task.Exception.GetBaseException());
-                        return;
-                    }
-                    var remoteEP = task.Result; //this.ServiceEndPoint;
-                    //close a current connection and create a new connection
-                    _connectChannel.Close();
-                    _connectChannel = this.CreateTcpChannel(this.IsSecureRequest);
-                    //re-register event bind
-                    _connectChannel.Completed += channel_Completed;
-                    _connectChannel.Error += channel_Error;
-                    _connectChannel.Connect(remoteEP);
-                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);               
-            }
-            else
-            {
-                _uri = newUri;
-                //send a new request use current connection
-                _writeBuffer = this.GetRequestHeadersBytes();
-                _connectChannel.Send(_writeBuffer, 0, this.BuffSize);
-            }
-        }
-
-        /// <summary>
-        /// Occurs when the http request task is completed include a timeout,exception,canceled.
-        /// </summary>
-        /// <param name="status">The http complated status.</param>
-        private void OnCompleted(HttpRequestTaskStatus status)
-        {
-            if (status != this.RequestStatus)
-            {
-                _state = (int)status;
-            }
-            if (_task != null)
-            {
-                _task.Dispose();
-            }
-            _connectChannel.Close();
-        }
-
-        private ITcpChannel CreateTcpChannel(bool useSSL)
-        {
-            if (useSSL)
-            {
-                return new SecureTcpChannel(this, this.ClientCertificates);
-            }
-            return new TcpChannel(this);
-        }
-     
         #region Properties
         /// <summary>
-        /// Gets whether this request is secure https request.
+        /// Gets or sets the value of the <c>Accept</c> HTTP header.
         /// </summary>
-        private bool IsSecureRequest
+        public string Accept
         {
             get
             {
-                return string.CompareOrdinal(this._uri.Scheme, Uri.UriSchemeHttps) == 0;
-            }
-        }
-
-        /// <summary>
-        /// Gets a value that indicates whether a response has been received from an Internet resource.
-        /// </summary>
-        public bool HaveResponse
-        {
-            get
-            {
-                return !(this.RequestStatus == HttpRequestTaskStatus.Init || this.RequestStatus == HttpRequestTaskStatus.Processing);
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the time-out value in milliseconds for the get HTTP response from a remote host.
-        /// </summary>
-        public int Timeout
-        {
-            get
-            {
-                return _timeout;
+                return _headers.Accept;
             }
             set
             {
-                if (_timeout <= 0)
-                {
-                    throw new ArgumentOutOfRangeException("value","The specified value must be greater than 0");
-                }
-                _timeout = value;
-            }
-        }
-        
-        /// <summary>
-        /// Gets or sets a value that indicates whether to make a persistent connection to the Internet resource.
-        /// </summary>
-        public bool KeepAlive
-        {
-            get;
-            set;
-        }
-
-        /// <summary>
-        /// Gets or sets the type of decompression that is used.
-        /// </summary>
-        public bool AutomaticDecompression
-        {
-            get
-            {
-                return _automaticDecompression;
-            }
-            set
-            {
-                if (this.RequestSubmitted)
-                {
-                    throw new InvalidOperationException("This property cannot be set after writing has started.");
-                }
-                _automaticDecompression = value;
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the collection of security certificates that are associated with this request.
-        /// </summary>
-        public X509CertificateCollection ClientCertificates
-        {
-            get
-            {
-                if (this._clientCertificates == null)
-                {
-                    this._clientCertificates = new X509CertificateCollection();
-                }
-                return this._clientCertificates;
-            }
-            set
-            {
-                if (value == null)
-                {
-                    throw new ArgumentNullException("value");
-                }
-                this._clientCertificates = value;
-            }
-        }
-
-        /// <summary>
-        /// Gets the request whether is submitted
-        /// </summary>
-        public bool RequestSubmitted
-        {
-            get
-            {
-                return _requestSubmitted;
-            }
-        }
-
-        /// <summary>
-        /// Gets or sets the maximum number of redirects that the request follows.
-        /// </summary>
-        public int MaximumAutomaticRedirections
-        {
-            get
-            {
-                return _maximumAutomaticRedirections;
-            }
-            set
-            {
-                if (_maximumAutomaticRedirections <= 0)
-                {
-                    throw new ArgumentOutOfRangeException("value","The specified value must be greater than 0.");
-                }
-                _maximumAutomaticRedirections = value;
-            }
-        }      
-
-        /// <summary>        
-        /// Gets or sets the maximum allowed length of the response content.
-        /// </summary>
-        /// <remarks>
-        ///  A value of -1 means no limit is imposed on the response content; a value of 0 means that all requests fail. 
-        ///  If the MaximumResponseContentLength property is not explicitly set, it defaults value is -1.
-        ///  If the length of the response content received exceeds the value of the MaximumResponseContentLength property,
-        ///  will throw a <see cref="HttpException"/> with the Status property set to MessageLengthLimitExceeded.
-        /// </remarks>
-        public long MaximumResponseContentLength
-        {
-            get
-            {
-                return _maximumResponseContentLength;
-            }
-            set
-            {
-                if (value == 0)
-                {
-                    throw new ArgumentOutOfRangeException("value","The specified value must be greater than 0.");
-                }
-                _maximumResponseContentLength = value;
+                _headers.Accept = value;
             }
         }
 
@@ -536,41 +120,90 @@ namespace Yamool.Net.Http
             }
             set
             {
+                this.CheckRequestSubmitted();
                 _allowAutoRedirect = value;
             }
         }
 
         /// <summary>
-        /// Gets the headers which should be sent with each request.
+        /// Gets or sets the type of decompression that is used.
         /// </summary>
-        public HttpRequestHeaders Headers
-        {
-            get;
-            private set;
-        }
-
-        /// <summary>
-        /// Gets or sets a value that specifies the size of the receive buffer of the request.
-        /// </summary>
-        /// <value>The default value is 512.</value>
-        public int BuffSize
+        public DecompressionMethods AutomaticDecompression
         {
             get
             {
-                return _buffSize;
+                return _automaticDecompression;
             }
             set
             {
-                if (value < 1)
-                {
-                    throw new ArgumentOutOfRangeException("value","The specified value must be greater than 0.");
-                }
-                _buffSize = value;
+                this.CheckRequestSubmitted();
+                _automaticDecompression = value;
             }
         }
 
         /// <summary>
-        /// Gets or sets the Content-length HTTP header.
+        /// Gets the boolean value that indicates this request whether is cancelled.
+        /// </summary>
+        internal bool Aborted
+        {
+            get
+            {
+                return _requestCancellationToken.IsCancellationRequested;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the collection of security certificates that are associated with this request.
+        /// </summary>
+        public X509CertificateCollection ClientCertificates
+        {
+            get
+            {
+                if (_clientCertificates == null)
+                {
+                    _clientCertificates = new X509CertificateCollection();
+                }
+                return _clientCertificates;
+            }
+            set
+            {
+                this.CheckRequestSubmitted();
+                _clientCertificates = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the value of the <c>Connection</c> HTTP header.
+        /// </summary>
+        public string Connection
+        {
+            get
+            {
+                return _headers.Connection;
+            }
+            set
+            {
+                _headers.Connection = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the value of the <c>Content-type</c> HTTP header. 
+        /// </summary>
+        public string ContentType
+        {
+            get
+            {
+                return _headers.ContentType;
+            }
+            set
+            {
+                _headers.ContentType = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the content length for the request-body.
         /// </summary>
         public long ContentLength
         {
@@ -579,63 +212,179 @@ namespace Yamool.Net.Http
                 return _contentLength;
             }
             set
-            {
+            { 
+                this.CheckRequestSubmitted();
                 if (value < 0)
                 {
-                    throw new ArgumentOutOfRangeException("value","The specified value must be greater than 0.");
-                }
+                    throw new ArgumentOutOfRangeException("value is negative.");
+                }               
                 _contentLength = value;
             }
         }
 
         /// <summary>
-        /// Gets or sets the method for the request.
+        /// Gets or sets authentication information for the request.
         /// </summary>
-        public HttpMethod Method
-        {
-            get;
-            set;
-        }
-
-        /// <summary>
-        /// Gets or sets the end point of remote host of the request.
-        /// </summary>
-        public EndPoint RemoteEndPoint
-        {
-            get;
-            set;
-        }
-
-        /// <summary>
-        /// Gets the original Uniform Resource Identifier (URI) of the request.
-        /// </summary>
-        public Uri RequestUri
-        {
-            get;
-            private set;
-        }
-
-        /// <summary>
-        /// Gets or sets the bool vlaue that indicates whether use gzip or deflate encoding with the request.
-        /// </summary>
-        public bool UseGzipMode
-        {
-            get;
-            set;
-        }
-
-        /// <summary>
-        /// Gets or sets the value of the User-agent HTTP header.
-        /// </summary>
-        public string UserAgent
+        public ICredentials Credentials
         {
             get
             {
-                return this.Headers.UserAgent;
+                return _credentials;
             }
             set
             {
-                this.Headers.UserAgent = value;
+                this.CheckRequestSubmitted();
+                _credentials = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the cookies associated with the request.
+        /// </summary>
+        public CookieContainer CookieContainer
+        {
+            get
+            {
+                return _cookieContainer;
+            }
+            set
+            {
+                this.CheckRequestSubmitted();
+                _cookieContainer = value;
+            }
+        }
+
+        internal HttpMethod CurrentMethod
+        {
+            get
+            {
+                return _method;
+            }
+        }
+
+        /// <summary>
+        /// Get or set the <c>Date</c> HTTP header value to use in an HTTP request.
+        /// </summary>
+        public DateTime Date
+        {
+            get
+            {
+                return _headers.Date;
+            }
+            set
+            {
+                _headers.Date = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets the collection of HTTP request headers.
+        /// </summary>
+        public HttpRequestHeaders Headers
+        {
+            get
+            {
+                return _headers;
+            }
+        }
+
+        /// <summary>
+        /// Get or set the <c>Host</c> header value to use in an HTTP request independent from the request URI.
+        /// </summary>
+        public string Host
+        {
+            get
+            {
+                if (this.UseCustomHost)
+                {
+                    return GetHostAndPortString(_hostUri.Host, _hostUri.Port, _hostUri.IsDefaultPort);
+                }
+                return GetHostAndPortString(_uri.Host, _uri.Port, _uri.IsDefaultPort);
+            }
+            set
+            {
+                if (value == null)
+                {
+                    throw new ArgumentNullException("value");
+                }
+                this.CheckRequestSubmitted();
+                Uri uri;
+                if (value.IndexOf('/') >= 0 || (!TryGetHostUri(value, out uri)))
+                {
+                    throw new ArgumentException("The specified value is not a valid Host header string.");
+                }
+                _hostUri = uri;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the value of the <c>If-Modified-Since</c> HTTP header.
+        /// </summary>
+        public DateTime? IfModifiedSince
+        {
+            get
+            {
+                return _headers.IfModifiedSince;
+            }
+            set
+            {
+                _headers.IfModifiedSince = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets a value that indicates whether to make a persistent connection to the remote server.
+        /// </summary>
+        public bool KeepAlive
+        {
+            get
+            {
+                return _keepAlive;
+            }
+            set
+            {
+                this.CheckRequestSubmitted();
+                _keepAlive = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the maximum number of redirects that the request follows.
+        /// </summary>
+        public int MaxAutomaticRedirections
+        {
+            get
+            {
+                return _maxAutomaticRedirections;
+            }
+            set
+            {
+                if (value < 0)
+                {
+                    throw new ArgumentOutOfRangeException("value");
+                }
+                this.CheckRequestSubmitted();
+                _maxAutomaticRedirections = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the maximum allowed length of the response headers.
+        /// </summary>
+        public int MaxResponseHeadersLength
+        {
+            get
+            {
+                return _maximumResponseHeadersLength;
+            }
+            set
+            {
+                if (value < 0 && value != -1)
+                {
+                    throw new ArgumentOutOfRangeException("value");
+                }
+                this.CheckRequestSubmitted();
+                _maximumResponseHeadersLength = value;
             }
         }
 
@@ -650,199 +399,881 @@ namespace Yamool.Net.Http
             }
             set
             {
-                if (this.RequestSubmitted)
-                {
-                    throw new InvalidOperationException("This property cannot be set after writing has started.");
-                }
+                this.CheckRequestSubmitted();
                 _proxy = value;
             }
         }
 
-        private bool CanGetRequestStream
+        /// <summary>
+        /// Gets or sets the value of the <c>Referer</c> HTTP header.
+        /// </summary>
+        public string Referer
         {
             get
             {
-                return !this.Method.ContentBodyNotAllowed;
+                return _headers.Referer;
+            }
+            set
+            {
+                _headers.Referer = value;
             }
         }
 
-        private bool HasEntityBody
+        /// <summary>
+        /// Gets the original Uniform Resource Identifier (URI) of the request. 
+        /// </summary>
+        public Uri RequestUri
         {
             get
             {
-                if ((_submitData != null && _submitData.Length > 0) || this.ContentLength > 0)
-                {
-                    return true;
-                }
-                return false;
+                return _originUri;
             }
         }
 
-        private EndPoint ServiceEndPoint
+        /// <summary>
+        /// Gets or sets a value that indicates whether to send data in segments to the Internet resource.
+        /// </summary>
+        public bool SendChunked
         {
             get
             {
-                return FindServicePoint(_uri, this.Proxy);
+                return _sendChunked;
+            }
+            set
+            {
+                this.CheckRequestSubmitted();
+                _sendChunked = value;
             }
         }
 
-        private HttpRequestTaskStatus RequestStatus
+        /// <summary>
+        /// Gets the service point to use for the request.
+        /// </summary>
+        public ServicePoint ServicePoint
         {
             get
             {
-                return (HttpRequestTaskStatus)_state;
+                return this.FindServicePoint(false);
             }
         }
-        
+
+        /// <summary>
+        /// Gets or sets the number of milliseconds to wait before the HTTP response completed.
+        /// </summary>
+        public int Timeout
+        {
+            get
+            {
+                return _timeout;
+            }
+            set
+            {
+                this.CheckRequestSubmitted();
+                _timeout = value;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the value of the <c>User-agent</c> HTTP header.
+        /// </summary>
+        public string UserAgent
+        {
+            get
+            {
+                return _headers.UserAgent;
+            }
+            set
+            {
+                this.CheckRequestSubmitted();
+                _headers.UserAgent = value;
+            }
+        }
+
+        private bool UseCustomHost
+        {
+            get
+            {
+                return _hostUri != null && !_redirectedToDifferentHost;
+            }
+        }
+
+        internal bool UsesProxySemantics
+        {
+            get
+            {
+                return _servicePoint.UsesProxy && _uri.Scheme != Uri.UriSchemeHttps;
+            }
+        }
         #endregion
 
-        private void InitRequest(Uri requestUri)
+        /// <summary>
+        /// Sends an HTTP request and return an HTTP response as asynchronous operation.
+        /// </summary>
+        /// <returns></returns>
+        public Task<HttpResponse> SendAsync()
         {
-            _state = 0;
-            this.RequestUri = _uri = requestUri;
-            this.Headers = new HttpRequestHeaders();
-            this.Method = HttpMethod.Get;
-            //init default values.
-            _allowAutoRedirect = true;
-            _timeout = 45000;
-            _maximumAutomaticRedirections = 50;
-            _maximumResponseContentLength = -1;
-            _buffSize = 1024;
-            _buffer = new byte[this.BuffSize];
+            return this.SendAsync(null, CancellationToken.None);
+        }
+
+        /// <summary>
+        ///  Sends an HTTP request and return an HTTP response as asynchronous operation.
+        /// </summary>
+        /// <param name="requestCancellationToken"></param>
+        /// <returns></returns>
+        public Task<HttpResponse> SendAsync(CancellationToken requestCancellationToken)
+        {
+            return this.SendAsync(null, requestCancellationToken);
+        }
+
+        /// <summary>
+        /// Sends an HTTP request and return an HTTP response as asynchronous operation.
+        /// </summary>
+        /// <param name="content"></param>
+        /// <param name="requestCancellationToken"></param>
+        /// <returns></returns>
+        public async Task<HttpResponse> SendAsync(HttpContent content, CancellationToken requestCancellationToken)
+        {
+            this.CheckProtocol(content != null);
+            if (this.SetRequestSubmitted())
+            {
+                throw new InvalidOperationException("This HTTP request has been submitted.");
+            }
+
+            var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(requestCancellationToken);
+            if (this.SetTimeout(linkedCts))
+            {
+                _requestCancellationToken = linkedCts.Token;
+            }
+            _submitContent = content;
+            var connection = this.ServicePoint.SubmitRequest(this);
+            var responseData = await this.SendRequestAsync(connection).ConfigureAwait(false);
+            return new HttpResponse(_uri, _method, responseData, _automaticDecompression);
+        }
+
+        /// <summary>
+        /// Send request to the service point and get the response.
+        /// </summary>
+        /// <returns></returns>
+        private async Task<CoreResponseData> SendRequestAsync(Connection connection)
+        {           
+           try
+           {
+               await connection.ConnectAsync();
+               //write a request header to the connection that established connected.    
+               await this.WriteRequestAsync(connection);
+               return await this.ReadResponseAsync(connection);
+           }
+           catch
+           {
+               connection.Close();
+               throw;
+           }
+        }
+
+        private async Task<CoreResponseData> ReadResponseAsync(Connection connection)
+        {            
+            _readState = ReadState.Start;
+            var requestDone = false;        
+            var bytesScanned = 0;
+            var readBuffer = new ArraySegment<byte>();
+            var buffer_offset = connection.Buffer.Offset;
+            var buffer_length = connection.Buffer.Length;
+            while (!requestDone)
+            {
+                if (this.Aborted)
+                {
+                    throw new OperationCanceledException("The request was canceled.");
+                }
+                readBuffer = await connection.ReadPooledBufferAsync(buffer_offset, buffer_length);
+                var bytesRead = readBuffer.Count;
+                if (bytesRead == 0)
+                {
+                    //connection is closed by the remote host.
+                    break;
+                }
+                bytesScanned = 0;
+                var parseStatus = this.ParseResponseData(readBuffer, ref bytesScanned, ref requestDone);
+                if (parseStatus == DataParseStatus.Invalid || parseStatus == DataParseStatus.DataTooBig)
+                {
+                    if (parseStatus == DataParseStatus.Invalid)
+                    {
+                        throw new HttpResponseException("Cannot correct to parse the server response.",WebExceptionStatus.ServerProtocolViolation);
+                    }
+                    else
+                    {
+                        throw new HttpResponseException("The server response buffer limit exceeded.", WebExceptionStatus.MessageLengthLimitExceeded);
+                    }
+                }
+                else if (parseStatus == DataParseStatus.NeedMoreData)
+                {
+                    var unparsedDataSize = bytesRead - bytesScanned;
+                    if (unparsedDataSize > 0)
+                    {
+                        if (unparsedDataSize >= BufferPool.DefaultBufferLength)
+                        {
+                            throw new IOException("unparsed size exceeded the buffer length.");
+                        }
+                        Buffer.BlockCopy(connection.Buffer.Array, bytesScanned, connection.Buffer.Array, connection.Buffer.Offset, unparsedDataSize);
+                        buffer_offset = unparsedDataSize;
+                        buffer_length -= unparsedDataSize;
+                    }
+                }
+                else
+                {
+                    buffer_length = connection.Buffer.Length;
+                    buffer_offset = connection.Buffer.Offset;                    
+                }
+            }
+            //if (!requestDone)
+            //{
+            //    throw new HttpRequestException("The request not finished.");
+            //}
+            if (_cookieContainer != null)
+            {
+                _cookieContainer.SetCookies(_uri, _responseHeaders.SetCookie);
+            }
+            if (this.CheckRedirect((HttpStatusCode)_statusLineValues.StatusCode))
+            {               
+                if (_redirectedToDifferentHost)
+                {
+                    var previous_connection = connection;
+                    connection = this.FindServicePoint(true).SubmitRequest(this);
+                    previous_connection.Close(true);
+                }
+                return await this.SendRequestAsync(connection);
+            }
+            var connectStream = this.CreateResponseStream(connection, readBuffer, bytesScanned);
+            return new CoreResponseData(_statusLineValues, _responseHeaders, connectStream);
+        }
+
+        private DataParseStatus ParseResponseData(ArraySegment<byte> data, ref int bytesScanned, ref bool requestDone)
+        {
+            var result = DataParseStatus.NeedMoreData;
+            requestDone = false;
+            switch (_readState)
+            {
+                case ReadState.Start:
+                    {                       
+                        _readState = ReadState.StatusLine;
+                        _statusState = BeforeVersionNumbers;
+                        _totalResponseHeadersLength = 0;
+                        _statusLineValues = new StatusLineValues()
+                        {
+                            MajorVersion = 0,
+                            MinorVersion = 0,
+                            StatusCode = 0,
+                            StatusDescription = ""
+                        };
+                        goto case ReadState.StatusLine;
+                    }
+                case ReadState.StatusLine:
+                    {
+                        var parseStatus = this.ParseStatusLine(data, ref bytesScanned);
+                        if (parseStatus == DataParseStatus.Done)
+                        {
+                            _readState = ReadState.Headers;
+                            _responseHeaders = new HttpResponseHeaders();
+                            goto case ReadState.Headers;
+                        }
+                        else if (parseStatus != DataParseStatus.NeedMoreData)
+                        {
+                            result = parseStatus;
+                            break;
+                        }
+                        break;
+                    }
+                case ReadState.Headers:
+                    {
+                        if (bytesScanned >= data.Count)
+                        {
+                            //need more data
+                            break;
+                        }
+                        var parseStatus = _responseHeaders.ParseHeaders(data, ref bytesScanned, ref _totalResponseHeadersLength, _maximumResponseHeadersLength);
+                        if (parseStatus == DataParseStatus.Invalid || parseStatus == DataParseStatus.DataTooBig)
+                        {
+                            result = parseStatus;
+                            break;
+                        }                            
+                        else if (parseStatus == DataParseStatus.Done)
+                        {
+                            //if StatusCode  is BadRequest or Continue                            
+                            goto case ReadState.Data;
+                        }
+                        break;
+                    }
+                case ReadState.Data:
+                    {
+                        requestDone = true;
+                        result = DataParseStatus.Done;
+                        break;
+                    }
+            }
+            return result;
+        }
+
+        private DataParseStatus ParseStatusLine(ArraySegment<byte> data, ref int bytesParsed)
+        {
+            //HTTP/1.1 301 Moved Permanently\r\n
+            //HTTP/1.1 200 OK\r\n
+            var parseStatus = DataParseStatus.DataTooBig;
+            var statusLineLength = data.Count;
+            var initialBytesParsed = bytesParsed;
+            var effectiveMax = _maximumResponseHeadersLength <= 0 ? int.MaxValue : (_maximumResponseHeadersLength - _totalResponseHeadersLength + bytesParsed);
+            if (statusLineLength < effectiveMax)
+            {
+                parseStatus = DataParseStatus.NeedMoreData;
+                effectiveMax = statusLineLength;
+            }
+            if (bytesParsed >= effectiveMax)
+            {
+                goto quit;
+            }
+
+            switch (_statusState)
+            {
+                case BeforeVersionNumbers:
+                    {
+                        while (_totalResponseHeadersLength - initialBytesParsed + bytesParsed < BeforeVersionNumberBytes.Length)
+                        {
+                            if (BeforeVersionNumberBytes[_totalResponseHeadersLength - initialBytesParsed + bytesParsed] != data.Get(bytesParsed))
+                            {
+                                parseStatus = DataParseStatus.Invalid;
+                                goto quit;
+                            }
+                            if (++bytesParsed == effectiveMax)
+                            {
+                                goto quit;
+                            }
+                        }
+                        if (data.Get(bytesParsed) == '.')
+                        {
+                            parseStatus = DataParseStatus.Invalid;
+                            goto quit;
+                        }
+                        _statusState = MajorVersionNumber;
+                        goto case MajorVersionNumber;
+                    }
+                case MajorVersionNumber:
+                    {
+                        while (data.Get(bytesParsed) != '.')
+                        {
+                            if (data.Get(bytesParsed) < '0' || data.Get(bytesParsed) > '9')
+                            {
+                                parseStatus = DataParseStatus.Invalid;
+                                goto quit;
+                            }
+                            _statusLineValues.MajorVersion = _statusLineValues.MajorVersion * 10 + data.Get(bytesParsed) - '0';//1,10
+                            if (++bytesParsed == effectiveMax)
+                            {
+                                goto quit;
+                            }
+                        }
+                        // Need visibility past the dot.
+                        if (bytesParsed + 1 == effectiveMax)
+                        {
+                            goto quit;
+                        }
+                        bytesParsed++;
+                        if (data.Get(bytesParsed) == ' ')
+                        {
+                            parseStatus = DataParseStatus.Invalid;
+                            goto quit;
+                        }
+                        _statusState = MinorVersionNumber;
+                        goto case MinorVersionNumber;
+                    }
+                case MinorVersionNumber:
+                    {
+                        while (data.Get(bytesParsed) != ' ')
+                        {
+                            if (data.Get(bytesParsed) < '0' || data.Get(bytesParsed) > '9')
+                            {
+                                parseStatus = DataParseStatus.Invalid;
+                                goto quit;
+                            }
+
+                            _statusLineValues.MinorVersion = _statusLineValues.MinorVersion * 10 + data.Get(bytesParsed) - '0';
+
+                            if (++bytesParsed == effectiveMax)
+                            {
+                                goto quit;
+                            }
+                        }
+                        _statusState = StatusCodeNumber;
+                        _statusLineValues.StatusCode = 1;
+
+                        // Move past the space.
+                        if (++bytesParsed == effectiveMax)
+                        {
+                            goto quit;
+                        }
+                        goto case StatusCodeNumber;
+                    }
+                case StatusCodeNumber:
+                    {
+                        while (data.Get(bytesParsed) >= '0' && data.Get(bytesParsed) <= '9')
+                        {
+                            if (_statusLineValues.StatusCode >= 1000)
+                            {
+                                parseStatus = DataParseStatus.Invalid;
+                                goto quit;
+                            }
+
+                            _statusLineValues.StatusCode = _statusLineValues.StatusCode * 10 + data.Get(bytesParsed) - '0';
+
+                            if (++bytesParsed == effectiveMax)
+                            {
+                                goto quit;
+                            }
+                        }
+                        if (data.Get(bytesParsed) != ' ' || _statusLineValues.StatusCode < 1000)
+                        {
+                            if (data.Get(bytesParsed) == '\r' && _statusLineValues.StatusCode >= 1000)
+                            {
+                                _statusLineValues.StatusCode -= 1000;
+                                _statusState = AfterCarriageReturn;
+                                if (++bytesParsed == effectiveMax)
+                                {
+                                    goto quit;
+                                }
+                                goto case AfterCarriageReturn;
+                            }
+                            parseStatus = DataParseStatus.Invalid;
+                            goto quit;
+                        }
+                        _statusLineValues.StatusCode -= 1000;
+
+                        _statusState = AfterStatusCode;
+
+                        // Move past the space.
+                        if (++bytesParsed == effectiveMax)
+                        {
+                            goto quit;
+                        }
+                        goto case AfterStatusCode;
+                    }
+                case AfterStatusCode:
+                    {
+                        var beginning = bytesParsed;
+                        while (data.Get(bytesParsed) != '\r')
+                        {
+                            if (data.Get(bytesParsed) < ' ' || data.Get(bytesParsed) == 127)
+                            {
+                                parseStatus = DataParseStatus.Invalid;
+                                goto quit;
+                            }
+                            if (++bytesParsed == effectiveMax)
+                            {
+                                var s = Encoding.ASCII.GetString(data.Array, beginning, bytesParsed - beginning);
+                                if (_statusLineValues.StatusDescription == null)
+                                {
+                                    _statusLineValues.StatusDescription = s;
+                                }
+                                else
+                                {
+                                    _statusLineValues.StatusDescription += s;
+                                }
+                                goto quit;
+                            }
+                        }
+                        if (bytesParsed > beginning)
+                        {
+                            var s = Encoding.ASCII.GetString(data.Array, data.Offset + beginning, bytesParsed - beginning);
+                            if (_statusLineValues.StatusDescription == null)
+                            {
+                                _statusLineValues.StatusDescription = s;
+                            }
+                            else
+                            {
+                                _statusLineValues.StatusDescription += s;
+                            }
+                        }
+                        else if (_statusLineValues.StatusDescription == null)
+                        {
+                            _statusLineValues.StatusDescription = "";
+                        }
+                        _statusState = AfterCarriageReturn;
+
+                        // Move past the CR.
+                        if (++bytesParsed == effectiveMax)
+                        {
+                            goto quit;
+                        }
+                        goto case AfterCarriageReturn;
+                    }
+                case AfterCarriageReturn:
+                    {
+                        if (data.Get(bytesParsed) != '\n')
+                        {
+                            parseStatus = DataParseStatus.Invalid;
+                            goto quit;
+                        }
+                        parseStatus = DataParseStatus.Done;
+                        bytesParsed++;
+                        break;
+                    }
+            }
+        quit:
+            _totalResponseHeadersLength += bytesParsed - initialBytesParsed;
+
+            return parseStatus;
+        }
+
+        private ConnectStream CreateResponseStream(Connection connection, ArraySegment<byte> data, int bytesParsed)
+        {
+            var fHaveChunked = false;
+            var dummyResponseStream = false;
+            var contentLength = this.ProcessHeaderData(ref fHaveChunked, out dummyResponseStream);
+            if (contentLength == -2)
+            {
+                throw new HttpResponseException("Cannot correct to parse the server response.", WebExceptionStatus.ServerProtocolViolation);
+            }
+            _statusLineValues.ContentLength = contentLength;
+            int bufferLeft = data.Count - bytesParsed;
+            var bytesToCopy = 0;
+            if (dummyResponseStream)
+            {
+                bytesToCopy = 0;
+                fHaveChunked = false;
+            }
+            else
+            {
+                bytesToCopy = -1;
+                if (!fHaveChunked && (contentLength <= (long)int.MaxValue))
+                {
+                    bytesToCopy = (int)contentLength;
+                }
+            }           
+            if (bytesToCopy != -1 && bytesToCopy <= bufferLeft)
+            {
+                return new ConnectStream(connection, data, bytesParsed, bytesToCopy, dummyResponseStream ? 0 : contentLength, fHaveChunked, this);
+            }
+            else
+            {
+                return new ConnectStream(connection, data, bytesParsed, bufferLeft, dummyResponseStream ? 0 : contentLength, fHaveChunked, this);
+            }
+        }
+
+        private bool CheckRedirect(HttpStatusCode code)
+        {
+            if (code == HttpStatusCode.MultipleChoices || // 300
+                code == HttpStatusCode.MovedPermanently || // 301
+                code == HttpStatusCode.Found || // 302
+                code == HttpStatusCode.SeeOther || // 303
+                code == HttpStatusCode.TemporaryRedirect)  // 307
+            {
+                if (!_allowAutoRedirect)
+                {
+                    throw new RedirectException(_originUri);
+                }
+                _method = HttpMethod.Get;
+                _autoRedirects++;
+                if (_autoRedirects > _maxAutomaticRedirections)
+                {
+                    throw new CircularRedirectException(_maxAutomaticRedirections, _originUri);
+                }
+                var location = _responseHeaders.Location;
+                if (location == null)
+                {
+                    throw new HttpResponseException("No Location header value.", WebExceptionStatus.ServerProtocolViolation);
+                }
+                var newUri = new Uri(_uri, location);
+                if (!HttpUtils.IsHttpUri(newUri))
+                {
+                    throw new ProtocolException("Supports HTTP or HTTPS scheme.");
+                }
+                var oldUri = _uri;
+                _uri = newUri;
+                _redirectedToDifferentHost = Uri.Compare(_originUri, _uri, UriComponents.HostAndPort, UriFormat.Unescaped, StringComparison.OrdinalIgnoreCase) != 0;
+                if (this.UseCustomHost)
+                {
+                    // if the scheme/path changed, update _HostUri to reflect the new scheme/path
+                    var hostString = GetHostAndPortString(_hostUri.Host, _hostUri.Port, true);
+                    Uri hostUri;
+                    var hostUriSuccess = TryGetHostUri(hostString, out hostUri);
+                    _hostUri = hostUri;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        private long ProcessHeaderData(ref bool fHaveChunked, out bool dummyResponseStream)
+        {
+            fHaveChunked = false;          
+            var contentLength = -1L;
+            var transferEncodingString = _responseHeaders.TransferEncoding;
+            if (transferEncodingString != null)
+            {
+                fHaveChunked = transferEncodingString.IndexOf(ChunkedHeader, StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            if (!fHaveChunked)
+            {
+                var contentLengthValue = _responseHeaders.ContentLength;
+                if (contentLengthValue.HasValue)
+                {
+                    contentLength = contentLengthValue.Value;
+                }
+                if (contentLength < -1)
+                {
+                    contentLength = -2;
+                }
+            }
+            dummyResponseStream = !_method.AllowResponseContent || _statusLineValues.StatusCode < (int)HttpStatusCode.OK ||
+                                 _statusLineValues.StatusCode == (int)HttpStatusCode.NoContent || (_statusLineValues.StatusCode == (int)HttpStatusCode.NotModified && contentLength < 0);
+            return contentLength;
+        }
+
+        private void CheckRequestSubmitted()
+        {
+            if (_requestSubmitted == 1)
+            {
+                throw new InvalidOperationException("This operation cannot be performed after the request has been submitted.");
+            }          
+        }
+
+        private ServicePoint FindServicePoint(bool forceFind)
+        {
+            var servicePoint = _servicePoint;
+            if (servicePoint == null || forceFind)
+            {
+                lock (this)
+                {
+                    if (_servicePoint == null || forceFind)
+                    {
+                        _servicePoint = ServicePointManager.FindServicePoint(_uri, _proxy);
+                    }
+                    servicePoint = _servicePoint;
+                }
+            }
+            return servicePoint;
+        }
+
+        private void CheckProtocol(bool requestedContent)
+        {
+            if (!HttpUtils.IsHttpUri(_uri))
+            {
+                throw new ProtocolException("Supports HTTP or HTTPS scheme.");
+            }
+            if (!_method.AllowRequestContent)
+            {
+                if (requestedContent)
+                {
+                    throw new ProtocolViolationException("Cannot send a content-body with this method[" + _method + "]");
+                }
+                _httpWriteMode = HttpWriteMode.None;
+            }
+            else
+            {
+                if (_sendChunked)
+                {                  
+                    _httpWriteMode = HttpWriteMode.Chunked;
+                }
+                else
+                {
+                    _httpWriteMode = (_contentLength >= 0L) ? HttpWriteMode.ContentLength : (requestedContent ? HttpWriteMode.Buffer : HttpWriteMode.None);
+                }
+            }
+            if (_httpWriteMode != HttpWriteMode.Chunked)
+            {
+                if (requestedContent && _contentLength == -1L && _keepAlive)
+                {
+                    throw new ProtocolViolationException("Must either set ContentLength to a non-negative number or set SendChunked to true with this method[" + _originMethod + "]");
+                }
+            }
         }
 
         private bool SetRequestSubmitted()
         {
-            bool ret = _requestSubmitted;
-            _requestSubmitted = true;
-            return ret;
+            if (Interlocked.Exchange(ref _requestSubmitted, 1) == 1)
+            {
+                return true;
+            }
+            return false;
         }
 
-        private void CheckProtocol(bool onRequestStream)
+        private async Task WriteRequestAsync(Connection connection)
         {
-            if (!this.CanGetRequestStream)
+            this.UpdateHeaders();
+            if (_httpWriteMode != HttpWriteMode.None)
             {
-                if (onRequestStream)
+                if (_httpWriteMode == HttpWriteMode.Chunked)
                 {
-                    throw new ProtocolViolationException("Cannot send a content-body with this verb-type.");
+                    _headers.AddInternal(HttpHeaderNames.TransferEncoding, ChunkedHeader);
+                }
+                else
+                {
+                    if (_contentLength >= 0L)
+                    {
+                        _headers.SetInternal(HttpHeaderNames.ContentLength, _contentLength.ToString());
+                    }
+                }
+                //100-continue ??
+            }
+            //Accept-Encoding header
+            var acceptEncodingValues = this.Accept ?? string.Empty;
+            if ((_automaticDecompression & DecompressionMethods.GZip) != DecompressionMethods.None && acceptEncodingValues.IndexOf(GZipHeader, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                if ((_automaticDecompression & DecompressionMethods.Deflate) != 0
+                    && acceptEncodingValues.IndexOf(DeflateHeader, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    _headers.AddInternal(HttpHeaderNames.AcceptEncoding, GZipHeader + ", " + DeflateHeader);
+                }
+                else
+                {
+                    _headers.AddInternal(HttpHeaderNames.AcceptEncoding, GZipHeader);
                 }
             }
-            if (!(_uri.Scheme == Uri.UriSchemeHttp || _uri.Scheme == Uri.UriSchemeHttps))
+            else
             {
-                throw new NotSupportProtocolException("The HttpRequest class only support a following protocol : http or https");
-            }
-        }
-
-        private void SetRequestHeaders()
-        {
-            //host
-            this.Headers.SetInternal(KnownHeaderNames.Host, _uri.Host + ((!_uri.IsDefaultPort) ? ":" + _uri.Port : string.Empty));
-            if (this.UseGzipMode)
-            {
-                this.Headers.SetInternal(KnownHeaderNames.AcceptEncoding, "gzip, deflate");
-            }
-            if (this.Method.RequireContentBody)
-            {
-                this.Headers.SetInternal(KnownHeaderNames.Pragma, "no-cache");
-                if (this.HasEntityBody)
+                if ((_automaticDecompression & DecompressionMethods.Deflate) != DecompressionMethods.None && acceptEncodingValues.IndexOf("deflate", StringComparison.OrdinalIgnoreCase) < 0)
                 {
-                    this.Headers.SetInternal(KnownHeaderNames.ContentLanguage, _contentLength.ToString());
+                    _headers.AddInternal(HttpHeaderNames.AcceptEncoding, DeflateHeader);
                 }
             }
-            if (this.KeepAlive)
+            if (_keepAlive)
             {
-                this.Headers.SetInternal(KnownHeaderNames.Connection, "keep-alive");
+                _headers.SetInternal(HttpHeaderNames.Connection, "Keep-Alive");
             }
-        }
-
-        private byte[] GetRequestHeadersBytes()
-        {
-            var sb = new StringBuilder();
-            //Request-Line   = Method SP Request-URI SP HTTP-Version CRLF          
-            sb.Append(this.Method.Method);
-            sb.Append(SP);
-            sb.Append(this.Proxy != null && !this.Proxy.IsBypassed(_uri) ? _uri.AbsoluteUri : _uri.PathAndQuery);
-            sb.Append(SP);
-            sb.Append("HTTP/");
-            sb.Append(HttpVersion);
-            sb.Append(CRLF);           
-
-            foreach (var header_pair in this.Headers)
+            else
             {
-                //ignore this header if the value of header is null or empty.
-                if (string.IsNullOrEmpty(header_pair.Value))
+                _headers.SetInternal(HttpHeaderNames.Connection, "Close");
+            }
+            var requestHeadersString = _headers.ToString();
+            string requestLine = null;
+            if (this.UsesProxySemantics)
+            {
+                requestLine = this.GenerateProxyRequestLine();
+            }
+            else
+            {
+                requestLine = this.GenerateRequestLine();
+            }
+            // Request-Line   = Method SP Request-URI SP HTTP-Version CRLF
+            // i.e. GET http://www.w3.org/pub/WWW/TheProject.html HTTP/1.1\r\n
+
+            var writeBytesCount = requestHeadersString.Length + requestLine.Length + RequestLineConstantSize;
+            byte[] writeBuffer = null;
+            var usePooledBuffer = false;
+            var offset = 0;
+            if (connection.Buffer.Length >= writeBytesCount)
+            {
+                writeBuffer = connection.Buffer.Array;
+                offset = connection.Buffer.Offset;
+                usePooledBuffer = true;
+            }
+            else
+            {
+                writeBuffer = new byte[writeBytesCount];
+            }           
+            offset += Encoding.ASCII.GetBytes(requestLine, 0, requestLine.Length, writeBuffer, offset);
+            Buffer.BlockCopy(HttpBytes, 0, writeBuffer, offset, HttpBytes.Length);
+            offset += HttpBytes.Length;
+            writeBuffer[offset++] = (byte)(_version == HttpVersion.HTTP20 ? '2' : '1');
+            writeBuffer[offset++] = (byte)'.';
+            writeBuffer[offset++] = (byte)(_version == HttpVersion.HTTP20 ? '0' : '1');
+            writeBuffer[offset++] = (byte)'\r';
+            writeBuffer[offset++] = (byte)'\n';
+            Encoding.UTF8.GetBytes(requestHeadersString, 0, requestHeadersString.Length, writeBuffer, offset);
+            offset += requestHeadersString.Length;
+            //transfer data
+            var beginReadIndex = 0;
+            var leftWriteBytes = writeBytesCount;
+            while (leftWriteBytes > 0)
+            {
+                var count = Math.Min(writeBytesCount - beginReadIndex, connection.Buffer.Length);
+                if (!usePooledBuffer)
                 {
-                    continue;
+                    Buffer.BlockCopy(writeBuffer, beginReadIndex, connection.Buffer.Array, connection.Buffer.Offset, count); 
                 }
-                sb.Append(header_pair.Key);
-                sb.Append(":");
-                sb.Append(header_pair.Value);
-                sb.Append(CRLF);
+                var writeBytes = await connection.WritePooledBufferAsync(connection.Buffer.Offset + beginReadIndex, count);          
+                leftWriteBytes -= writeBytes;
+                beginReadIndex += writeBytes;
             }
-
-            sb.Append(CRLF);
-            return Encoding.UTF8.GetBytes(sb.ToString());
-        }
-
-        #region DNS Lookup
-        private static EndPoint FindServicePoint(Uri address, IWebProxy proxy)
-        {
-            if (proxy != null)
+            if (_method.AllowRequestContent && _submitContent != null)
             {
-                address = proxy.GetProxy(address);
-            }
-            try
-            {
-                var hostAddresses = Dns.GetHostAddresses(address.Host);
-                if (hostAddresses.Length == 0)
+                using (_submitContent)
                 {
-                    throw new HttpException(HttpExceptionStatus.NameResolutionFailure, "Can't resolve specifed host.");
+                    await _submitContent.CopyToAsync(null);
+                    _submitContent = null;
                 }
-                return new IPEndPoint(hostAddresses[0], address.Port);
-            }
-            catch (System.Net.Sockets.SocketException socketEx)
-            {
-                throw new HttpException(HttpExceptionStatus.NameResolutionFailure, socketEx.Message);
-            }
-            catch (Exception)
-            {
-                throw;
             }
         }
 
-        private Task<EndPoint> GetServiceEndPointAsync()
+        private void UpdateHeaders()
         {
-            if (this.Proxy == null && this.RemoteEndPoint != null)
+            string safeHostAndPort;
+            if (this.UseCustomHost)
             {
-                return Task.FromResult(this.RemoteEndPoint);
+                safeHostAndPort = GetSafeHostAndPort(_hostUri);
             }
-            return FindServicePointAsync(_uri, this.Proxy);
+            else
+            {
+                safeHostAndPort = GetSafeHostAndPort(_uri);
+            }
+            _headers.SetInternal(HttpHeaderNames.Host, safeHostAndPort);
+            if (_cookieContainer != null)
+            {
+                _headers.RemoveInternal(HttpHeaderNames.Cookie);
+                var cookieHeader = _cookieContainer.GetCookieHeader(this.UseCustomHost ? _hostUri : _uri);
+                if (cookieHeader.Length > 0)
+                {
+                    _headers.SetInternal(HttpHeaderNames.Cookie, cookieHeader);
+                }
+            }
         }
 
-        public static Task<EndPoint> FindServicePointAsync(Uri address, IWebProxy proxy)
+        private bool SetTimeout(CancellationTokenSource cts)
         {
-            if (proxy != null)
+            if (_timeout != -1)
             {
-                address = proxy.GetProxy(address);
+                cts.CancelAfter(_timeout);
+                return true;
             }
-            var tcs = new TaskCompletionSource<EndPoint>();
-            Dns.GetHostAddressesAsync(address.Host).ContinueWith((Task<IPAddress[]> task, object state) =>
-            {
-                var ts = (TaskCompletionSource<EndPoint>)state;
-                if (task.IsFaulted)
-                {
-                    ts.SetException(task.Exception.GetBaseException());
-                    return;
-                }
-                if (task.IsCanceled)
-                {
-                    ts.SetCanceled();
-                    return;
-                }
-                ts.SetResult(new IPEndPoint(task.Result[0], address.Port));
-            }, tcs, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            return tcs.Task;
+            return false;
         }
-        #endregion
-    }    
+
+        private static string GetSafeHostAndPort(Uri sourceUri)
+        {
+            return GetHostAndPortString(sourceUri.DnsSafeHost, sourceUri.Port, !sourceUri.IsDefaultPort);
+        }
+
+        private static string GetHostAndPortString(string hostName, int port, bool addPort)
+        {
+            if (addPort)
+            {
+                return hostName + ":" + port;
+            }
+            return hostName;
+        }
+
+        private string GenerateProxyRequestLine()
+        {
+            //
+            // Handle Proxy Case, i.e. "GET http://hostname-outside-of-proxy.somedomain.edu:999"
+            //
+            var scheme = _uri.GetComponents(UriComponents.Scheme | UriComponents.KeepDelimiter, UriFormat.UriEscaped);
+            var host = GetSafeHostAndPort(_uri);
+            var path = _uri.GetComponents(UriComponents.Path | UriComponents.Query, UriFormat.UriEscaped);
+            //method + SP + scheme + host + path + SP
+            return string.Concat(_method.Name, SP, scheme, host, path, SP);
+        }
+
+        private string GenerateRequestLine()
+        {
+            var pathAndQuery = _uri.PathAndQuery;
+            return string.Concat(_method.Name, SP, pathAndQuery, SP);
+        }
+
+        private bool TryGetHostUri(string hostName, out Uri hostUri)
+        {
+            StringBuilder sb = new StringBuilder(_uri.Scheme);
+            sb.Append("://");
+            sb.Append(hostName);
+            sb.Append(_uri.PathAndQuery);
+
+            return Uri.TryCreate(sb.ToString(), UriKind.Absolute, out hostUri);
+        }
+    }
 }

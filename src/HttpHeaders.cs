@@ -1,6 +1,5 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
@@ -8,6 +7,7 @@ namespace Yamool.Net.Http
     using System.Collections;
     using System.Collections.Generic;
     using System.Linq;
+    using System.Text;
 
     /// <summary>
     /// A collection of headers and their values as defined in RFC 2616.
@@ -23,44 +23,6 @@ namespace Yamool.Net.Http
         protected HttpHeaders()
         {
             _headerStore = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        /// <summary>
-        /// Inserts a header with the specified name and value into the collection
-        /// </summary>
-        /// <param name="name">The name of the header add to the collection.</param>
-        /// <param name="value">The content of the header to set.</param>
-        /// <remarks>If the specified the header already exists in the header then will add new header value to the end of header with same header keys.</remarks>
-        public void Add(string name, string value)
-        {
-            name = CheckBadChars(name, false);
-            value = CheckBadChars(value, true);
-            this.AddInternal(name, value);
-        }
-
-        /// <summary>
-        /// Sets the specified header to the specified value.
-        /// </summary>
-        /// <param name="name">The header to set.</param>
-        /// <param name="value">The content of the header to set.</param>
-        /// <remarks>
-        /// If the header specified in header is already present, value replaces the existing value
-        /// </remarks>
-        public void Set(string name, string value)
-        {
-            name = CheckBadChars(name, false);
-            value = CheckBadChars(value, true);
-            this.SetInternal(name, value);
-        }
-
-        /// <summary>
-        /// Removes the specified header from the HttpHeaders collection.
-        /// </summary>
-        /// <param name="name">The name of the header to remove from the collection.</param>
-        public bool Remove(string name)
-        {
-            name = CheckBadChars(name, false);
-            return this.RemoveInternal(name);
         }
 
         /// <summary>
@@ -91,6 +53,90 @@ namespace Yamool.Net.Http
             {
                 return this.Get(index);
             }
+        }
+
+        public bool IsReadOnly
+        {
+            get;
+            private set;
+        }
+
+        /// <summary>
+        /// Gets the number of header contained in the Collection.
+        /// </summary>
+        public int Count
+        {
+            get
+            {
+                return _headerStore.Count;
+            }
+        }
+
+        public string[] AllKeys
+        {
+            get
+            {
+                if (_allKeys == null)
+                {
+                    _allKeys = _headerStore.Keys.ToArray();
+                }
+                return _allKeys;
+            }
+        }
+
+        /// <summary>
+        /// Inserts a header with the specified name and value into the collection
+        /// </summary>
+        /// <param name="name">The name of the header add to the collection.</param>
+        /// <param name="value">The content of the header to set.</param>
+        /// <remarks>If the specified the header already exists in the header then will add new header value to the end of header with same header keys.</remarks>
+        public void Add(string name, string value)
+        {
+            if (this.IsReadOnly)
+            {
+                throw new NotSupportedException("The http header collection is read-only.");
+            }
+            name = CheckBadChars(name, false);
+            value = CheckBadChars(value, true);
+            this.AddInternal(name, value);
+        }
+
+        /// <summary>
+        /// Sets the specified header to the specified value.
+        /// </summary>
+        /// <param name="name">The header to set.</param>
+        /// <param name="value">The content of the header to set.</param>
+        /// <remarks>
+        /// If the header specified in header is already present, value replaces the existing value
+        /// </remarks>
+        public void Set(string name, string value)
+        {
+            if (this.IsReadOnly)
+            {
+                throw new NotSupportedException("The http header collection is read-only.");
+            }
+            name = CheckBadChars(name, false);
+            value = CheckBadChars(value, true);
+            this.SetInternal(name, value);
+        }
+
+        /// <summary>
+        /// Removes the specified header from the HttpHeaders collection.
+        /// </summary>
+        /// <param name="name">The name of the header to remove from the collection.</param>
+        public bool Remove(string name)
+        {
+            if (this.IsReadOnly)
+            {
+                throw new NotSupportedException("The http header collection is read-only.");
+            }
+            name = CheckBadChars(name, false);
+            return this.RemoveInternal(name);
+        }
+
+        internal void SetReadOnly()
+        {
+            this.IsReadOnly = true;
         }
 
         /// <summary>
@@ -143,10 +189,6 @@ namespace Yamool.Net.Http
 
         internal void AddInternal(string name, string value)
         {
-            if (this.IsReadOnly)
-            {
-                throw new NotSupportedException("Collection is read-only");
-            }
             this.InvalidateCachedArrays();
             if (_headerStore.ContainsKey(name))
             {
@@ -157,27 +199,37 @@ namespace Yamool.Net.Http
                 _headerStore[name] = value;
             }
         }
+
         internal void SetInternal(string name, string value)
         {
-            if (this.IsReadOnly)
-            {
-                throw new NotSupportedException("Collection is read-only");
-            }
             this.InvalidateCachedArrays();
             _headerStore[name] = value;
         }
+
         internal bool RemoveInternal(string name)
         {
-            return _headerStore != null && _headerStore.Remove(name);
+            return _headerStore.Remove(name);
+        }
+
+        internal void AddHeaders(HttpHeaders headers)
+        {
+            if (headers.Count == 0)
+            {
+                return;
+            }
+            foreach (var pair in headers)
+            {
+                this.SetInternal(pair.Key, pair.Value);
+            }
         }
 
         internal static string CheckBadChars(string name, bool isHeaderValue)
         {
-            if ((name == null) || (name.Length == 0))
+            if (string.IsNullOrEmpty(name))
             {
                 if (!isHeaderValue)
                 {
-                    throw ((name == null) ? new ArgumentNullException("name") : new ArgumentException("The parameter 'name' cannot be an empty string.", "name"));
+                    throw new ArgumentException("The name of header is empty.");
                 }
                 return string.Empty;
             }
@@ -250,7 +302,7 @@ namespace Yamool.Net.Http
 
         internal static bool ContainsNonAsciiChars(string token)
         {
-            for (int i = 0; i < token.Length; i++)
+            for (var i = 0; i < token.Length; i++)
             {
                 if ((token[i] < ' ') || (token[i] > '~'))
                 {
@@ -260,7 +312,6 @@ namespace Yamool.Net.Http
             return false;
         }
 
-        #region IEnumerable
         public IEnumerator<KeyValuePair<string, string>> GetEnumerator()
         {
             foreach (var pair in _headerStore)
@@ -273,42 +324,144 @@ namespace Yamool.Net.Http
         {
             return this.GetEnumerator();
         }
-        #endregion
 
-        #region Properties
-        internal bool IsReadOnly
+        public override string ToString()
         {
-            get;
-            set;
+            return this.GetAsString(false, true);
         }
 
-        /// <summary>
-        /// Gets the number of header contained in the Collection.
-        /// </summary>
-        public int Count
+        internal string GetAsString(bool winInetCompat, bool forTrace)
         {
-            get
+            if (_headerStore.Count == 0)
             {
-                return _headerStore.Count;
+                return "\r\n";
             }
-        }
-
-        public string[] AllKeys
-        {
-            get
+            var sb = new StringBuilder(30 * _headerStore.Count);
+            foreach (var pair in _headerStore)
             {
-                if (_allKeys == null)
+                if (string.IsNullOrEmpty(pair.Value))
                 {
-                    _allKeys = _headerStore.Keys.ToArray();
+                    continue;
                 }
-                return _allKeys;
+                sb.Append(pair.Key);
+                sb.Append(winInetCompat ? ":" : ": ");
+                sb.Append(pair.Value);
+                sb.Append("\r\n");
             }
+            if (!forTrace)
+            {
+                sb.Append("\r\n");
+            }
+            return sb.ToString();
         }
-        #endregion
+
+        internal DataParseStatus ParseHeaders(ArraySegment<byte> data, ref int bytesParsed, ref int totalResponseHeadersLength, int maximumResponseHeadersLength)
+        {
+            var parseStatus = DataParseStatus.DataTooBig;
+            var length = data.Count;
+            var i = bytesParsed;
+            var effectiveMax = maximumResponseHeadersLength <= 0 ? int.MaxValue : (maximumResponseHeadersLength - totalResponseHeadersLength + i);
+            if (length < effectiveMax)
+            {
+                effectiveMax = length;
+                parseStatus = DataParseStatus.NeedMoreData;
+            }
+            if (i >= effectiveMax)
+            {
+                return parseStatus;
+            }
+            while (i < length)
+            {
+                if (data.Get(i) == '\r')
+                {
+                    if (++i == effectiveMax)
+                    {
+                        break;
+                    }
+                    if (data.Get(i++) == '\n')
+                    {
+                        totalResponseHeadersLength += i - bytesParsed;
+                        bytesParsed = i;
+                        parseStatus = DataParseStatus.Done;
+                        break;
+                    }
+                    parseStatus = DataParseStatus.Invalid;
+                    break;
+                }
+                var iBeginName = i;
+                //Read Header name.
+                for (; i < effectiveMax && data.Get(i++) != ':'; ) { }
+                if (i == effectiveMax)
+                {
+                    break;
+                }
+                if (i == iBeginName)
+                {
+                    parseStatus = DataParseStatus.Invalid;
+                    //invalid header name
+                    break;
+                }
+                var iEndName = i - 1;
+                var crlf = 0;
+                var iBeginValue = -1;
+                var iEndValue = -1;
+                //Read Header value.
+                for (; i < effectiveMax && crlf != 2; i++)
+                {
+                    var ch = (char)data.Get(i);
+                    switch (ch)
+                    {
+                        case ' ':
+                            {
+                                continue;
+                            }
+                        case '\r':
+                            {
+                                if (crlf == 0)
+                                {
+                                    crlf = 1;
+                                }
+                                break;
+                            }
+                        case '\n':
+                            {
+                                if (crlf == 1)
+                                {
+                                    crlf = 2;
+                                }
+                                break;
+                            }
+                    }
+                    if (iBeginValue == -1)
+                    {
+                        iBeginValue = i;
+                    }
+                    if (crlf == 0)
+                    {
+                        iEndValue = i;
+                    }
+                }
+                if (i == iBeginValue)
+                {
+                    parseStatus = DataParseStatus.Invalid;
+                    break;
+                }   
+                if (crlf != 2)
+                {
+                    break;
+                }
+                var headerName = Encoding.UTF8.GetString(data.Array, data.Offset + iBeginName, iEndName - iBeginName);
+                var headerValue = Encoding.UTF8.GetString(data.Array, data.Offset + iBeginValue, iEndValue - iBeginValue + 1);
+                this.AddInternal(headerName, headerValue);
+                totalResponseHeadersLength += i - bytesParsed;
+                bytesParsed = i;               
+            }
+            return parseStatus;
+        }
 
         private void InvalidateCachedArrays()
         {
-            this._allKeys = null;
+            _allKeys = null;
         }
 
         /// <summary>
@@ -341,6 +494,15 @@ namespace Yamool.Net.Http
                 return DateTime.MinValue;
             }
             return HttpUtils.String2Date(s);
+        }
+
+        protected void SetSpecialHeaders(string name, string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return;
+            }
+            this.SetInternal(name, CheckBadChars(value, true));
         }
     }
 }

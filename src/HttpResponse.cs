@@ -1,6 +1,5 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
@@ -8,6 +7,8 @@ namespace Yamool.Net.Http
     using System.Collections.Generic;
     using System.IO;
     using System.IO.Compression;
+    using System.Text.RegularExpressions;
+    using System.Net;
     using System.Text;
 
     /// <summary>
@@ -15,127 +16,172 @@ namespace Yamool.Net.Http
     /// </summary>
     public class HttpResponse : IDisposable
     {
-        private int _readState;
+        private readonly static Regex charsetRegex = new Regex(@"charset\s?=\s?([\w-]+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private Uri _uri;
+        private HttpMethod _method;
+        private CoreResponseData _coreResponseData;
+        private Stream _connectStream;
         private HttpResponseHeaders _headers;
-        private bool _propertiesDisposed;
-        private Stream _responseStream;
-        private HttpResponseStatus _responseStatus;
-        private string _httpVerb;
-        private byte[] _beWriteBytes;
-        private bool _automaticDecompression;
-        private bool _decompressed;
-      
-        internal HttpResponse(Uri responseUri, string httpVerb,bool automaticDecompression)
+        private long _contentLength;
+        private HttpStatusCode _statusCode;
+        private string _statusDescription;
+        private HttpVersion _version;
+        private volatile bool _disposed;
+        private string _characterSet;
+
+        internal HttpResponse(Uri responseUri, HttpMethod method, CoreResponseData coreData, DecompressionMethods decompressionMethod)
         {
-            _readState = 0;
             _uri = responseUri;
-            _httpVerb = httpVerb;
-            _automaticDecompression = automaticDecompression;
-            _headers = new HttpResponseHeaders();
-            _responseStatus = new HttpResponseStatus();
-        }
-
-        
-        /// <summary>
-        /// Gets the stream that is used to read the body of the response from the server
-        /// </summary>
-        /// <returns>A Stream containing the body of the response.</returns>
-        public Stream GetResponseStream()
-        {
-            this.CheckDisposed();
-            if (_responseStream != null)
+            _method = method;
+            _coreResponseData = coreData;
+            _connectStream = coreData.ConnectStream;
+            _headers = coreData.ResponseHeaders;            
+            _statusCode = coreData.StatusCode;
+            _contentLength = coreData.ContentLength;
+            _statusDescription = coreData.StatusDescription;
+            _version = coreData.HttpVersion;
+            //if (this.m_ContentLength == 0L && this.m_ConnectStream is ConnectStream)
+            //{
+            //    ((ConnectStream)this.m_ConnectStream).CallDone();
+            //}
+            var text = _headers[HttpHeaderNames.ContentLocation];
+            if (text != null)
             {
-                _responseStream.Position = 0;
-                if (!_decompressed && _automaticDecompression && this.Headers.ContentEncoding != null)
+                try
                 {
-                    if (string.Compare("gzip", this.Headers.ContentEncoding) == 0)
+                    Uri uri;
+                    if (Uri.TryCreate(_uri, text, out uri))
                     {
-                        _responseStream = new GZipStream(_responseStream, CompressionMode.Decompress);
+                        _uri = uri;
                     }
-                    else if (string.Compare("deflate", this.Headers.ContentEncoding) == 0)
-                    {
-                        _responseStream = new DeflateStream(_responseStream, CompressionMode.Decompress);
-                    }
-                    //possible is a media stream
-                    _decompressed = true;
-                }               
+                }
+                catch { }
             }
-            return _responseStream;
-        }
-
-        /// <summary>
-        /// Write a buffer to response.
-        /// </summary>
-        /// <param name="buffer">The bytes of response.</param>
-        /// <param name="offset">The offset value that which start write in buffer.</param>
-        /// <param name="count">The count of buffer which how number of bytes can be writeable.</param>
-        /// <remarks>If this method is called and writeHead has not been called, it will switch to implicit header mode and flush the implicit headers.</remarks>
-        internal void WriteResponse(byte[] buffer, int offset, int count)
-        {
-            if (_beWriteBytes != null)
+            if (decompressionMethod != DecompressionMethods.None)
             {
-                count = count - offset;
-                var newBuffer = new byte[count + _beWriteBytes.Length];
-                Buffer.BlockCopy(_beWriteBytes, 0, newBuffer, 0, _beWriteBytes.Length);
-                Buffer.BlockCopy(buffer, offset, newBuffer, _beWriteBytes.Length, count);
-                buffer = newBuffer;               
-                count = newBuffer.Length;
-                offset = 0;
-                //set null for keep-stream in response.
-                _beWriteBytes = null;
-            }
-            while (offset < count)
-            {
-                switch (_readState)
+                if ((text = _headers[HttpHeaderNames.ContentEncoding]) != null)
                 {
-                    case 0://http status code
-                        {
-                            this.WriteStatusCode(buffer, ref offset, count);
-                            break;
-                        }
-                    case 1://header of response
-                        {
-                            this.WriteHeader(buffer, ref offset, count);
-                            break;
-                        }
-                    case 2://content body of response
-                        {
-                            this.WriteContentBody(buffer, offset, count);
-                            return;
-                        }
+                    if ((decompressionMethod & DecompressionMethods.GZip) == DecompressionMethods.GZip && text.IndexOf(HttpRequest.GZipHeader, 0, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        _connectStream = new GZipStream(_connectStream, CompressionMode.Decompress);
+                        _contentLength = -1L;
+                        _headers.SetInternal(HttpHeaderNames.TransferEncoding, null);
+                    }
+                    else if ((decompressionMethod & DecompressionMethods.Deflate) == DecompressionMethods.Deflate && text.IndexOf(HttpRequest.DeflateHeader, 0, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        _connectStream = new DeflateStream(_connectStream, CompressionMode.Decompress);
+                        _contentLength = -1L;
+                        _headers.SetInternal(HttpHeaderNames.TransferEncoding, null);
+                    }
                 }
             }
-        }        
-
-        /// <summary>
-        /// Closes the response stream and release the resource.
-        /// </summary>
-        public void Close()
-        {
-            this.Dispose(true);
         }
 
-        #region Properties
         /// <summary>
-        /// Gets whether this response has completed.
+        /// Gets the character set of the response.
         /// </summary>
-        internal bool InternalPeekCompleted
+        public string CharacterSet
         {
             get
             {
-                return _responseStream != null && !_responseStream.CanWrite;
+                this.CheckDisposed();
+                var contentType = _headers.ContentType;
+                if (_characterSet == null)
+                {
+                    _characterSet = String.Empty;
+                    var m = charsetRegex.Match(contentType);
+                    if (m.Success)
+                    {
+                        _characterSet = m.Groups[1].Value;
+                    }
+                }
+                return _characterSet;
             }
         }
 
         /// <summary>
-        /// Gets the final Uniform Resource Identifier (URI) of the response.
+        /// Gets the URI of the Internet resource that responded to the request.
         /// </summary>
         public Uri ResponseUri
         {
             get
             {
+                this.CheckDisposed();
                 return _uri;
+            }
+        }
+
+        /// <summary>
+        /// Gets the method that is used to encode the body of the response.
+        /// </summary>
+        public string ContentEncoding
+        {
+            get
+            {
+                this.CheckDisposed();
+                return _headers.ContentEncoding ?? string.Empty;
+            }
+        }
+
+        /// <summary>
+        /// Gets the length of the content returned by the request.
+        /// </summary>
+        public long ContentLength
+        {
+            get
+            {
+                this.CheckDisposed();
+                return _contentLength;
+            }
+        }
+
+        /// <summary>
+        /// Gets the content type of the response.
+        /// </summary>
+        public string ContentType
+        {
+            get
+            {
+                this.CheckDisposed();
+                return _headers.ContentType ?? string.Empty;
+            }
+        }
+
+        /// <summary>
+        /// Gets the last date and time that the contents of the response were modified.
+        /// </summary>
+        public DateTime LastModified
+        {
+            get
+            {
+                this.CheckDisposed();
+                var value = _headers.LastModified;
+                if (value.HasValue)
+                {
+                    return value.Value;
+                }
+                return DateTime.Now;
+            }
+        }
+
+        public HttpVersion ProtocolVersion
+        {
+            get
+            {
+                this.CheckDisposed();
+                return _version;
+            }
+        }
+
+        /// <summary>
+        /// Gets the name of the server that sent the response.
+        /// </summary>
+        public string Server
+        {
+            get
+            {
+                this.CheckDisposed();
+                return _headers.Server ?? string.Empty;
             }
         }
 
@@ -146,72 +192,68 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return _responseStatus.Code;
-            }
-        }
-
-        /// <summary>
-        /// Gets the version of the http protocol.
-        /// </summary>
-        public string HttpVersion
-        {
-            get
-            {
-                return _responseStatus.HttpVersion;
+                this.CheckDisposed();
+                return _statusCode;
             }
         }
 
         /// <summary>
         /// Gets the status description returned with the response.
         /// </summary>
-        public string StatusDescript
+        public string StatusDescription
         {
             get
             {
-                return _responseStatus.Description;
+                this.CheckDisposed();
+                return _statusDescription;
             }
         }
 
         /// <summary>
-        /// Gets the headers that are associated with this response from the server. 
+        /// Gets the headers that are associated with this response from the server
         /// </summary>
         public HttpResponseHeaders Headers
         {
             get
             {
+                this.CheckDisposed();
                 return _headers;
             }
         }
 
-        internal long ContentBodyLength
-        {
-            get
-            {
-                return _responseStream.Length;
-            }
-        }
-
-        internal bool IsHeaderReady
-        {
-            get
-            {
-                return _readState > 1;
-            }
-        }
-
-        public bool IsSuccessStatusCode
-        {
-            get
-            {
-                return this.StatusCode >= HttpStatusCode.OK && this.StatusCode <= (HttpStatusCode)299;
-            }
-        }
-        #endregion
-
-        #region IDisposable
         /// <summary>
-        /// Releases the resources used by the <see cref="HttpResponse"/> object. 
+        /// Gets the method that is used to return the response.
         /// </summary>
+        public HttpMethod Method
+        {
+            get
+            {
+                this.CheckDisposed();
+                return _method;
+            }
+        }
+
+        /// <summary>
+        /// Gets the stream that is used to read the body of the response from the server
+        /// </summary>
+        /// <returns>A Stream containing the body of the response.</returns>
+        public Stream GetResponseStream()
+        {
+            this.CheckDisposed();
+            return _connectStream;
+        }
+
+        /// <summary>
+        /// Gets a header value with specified the header name.
+        /// </summary>
+        /// <param name="headerName"></param>
+        /// <returns></returns>
+        public string GetResponseHeader(string headerName)
+        {
+            this.CheckDisposed();
+            return _headers[headerName] ?? string.Empty;
+        }
+
         public void Dispose()
         {
             this.Dispose(true);
@@ -220,164 +262,20 @@ namespace Yamool.Net.Http
 
         private void Dispose(bool disposing)
         {
-            if (disposing && !_propertiesDisposed)
+            if (disposing && !_disposed)
             {
-                _propertiesDisposed = true;
-                if (_responseStream != null)
-                {
-                    _responseStream.Close();
-                }               
+                _disposed = true;
+                //we should check a `connection` value of response headers
+                _connectStream.Dispose();
             }
         }
-        #endregion
 
         private void CheckDisposed()
         {
-            if (_propertiesDisposed)
+            if (_disposed)
             {
-                throw new ObjectDisposedException(this.GetType().FullName);
+                throw new ObjectDisposedException(base.GetType().FullName);
             }
-        }
-
-        private void WriteStatusCode(byte[] buffer, ref int offset, int count)
-        {
-            //HTTP/1.1 301 
-            //HTTP/1.1 301 Moved Permanently
-            //HTTP/1.1 200 OK
-            var i = 0;
-            var position = offset;
-            var newline = false;
-            while (offset < count)
-            {
-                var code = buffer[offset++];
-                if (code == 13)
-                {
-                    //code or desc?
-                    var nextSegment = Encoding.UTF8.GetString(buffer, position, offset - position - 1);
-                    if (i == 1)
-                    {
-                        _responseStatus.Code = (HttpStatusCode)int.Parse(nextSegment);
-                    }
-                    else
-                    {
-                        _responseStatus.Description = nextSegment;
-                    }
-                    position = offset;
-                    i++;
-                    //\r\n
-                    if (offset < count && buffer[offset] == 10)
-                    {
-                        offset++;
-                        newline = true;                     
-                    }
-                    break;
-                }
-                else if (code == 32)
-                {
-                    var nextSegment= Encoding.UTF8.GetString(buffer, position, offset - position - 1);
-                    if (i == 0)
-                    {
-                        _responseStatus.HttpVersion = nextSegment;                    
-                    }
-                    else if (i == 1)
-                    {
-                        _responseStatus.Code = (HttpStatusCode)int.Parse(nextSegment);                        
-                    }
-                    position = offset;
-                    i++;
-                }
-            }
-            //copy a buffer if not arrived at status code line.
-            if (!newline)
-            {
-                _beWriteBytes = new byte[count];
-                Buffer.BlockCopy(buffer, offset, _beWriteBytes, 0, count);
-            }
-            else
-            {
-                _readState = 1;
-            }
-        }
-
-        private void WriteHeader(byte[] buffer, ref int offset, int count)
-        {
-            //header_key:header_value
-            //\r\n
-            //\r\n [endof]
-            var newline = false;
-            var endof = false;
-            var colon=0;
-            var position = offset;
-            while (offset < count)
-            {
-                var code = buffer[offset++];
-                //Set-Cookie:_FS=NU=1; domain=.bing.com; path=/
-                if (colon == 0 && code == ':')
-                {
-                    colon = offset - 1;
-                    continue;
-                }
-                if (code == 13)
-                {
-                    if (offset < count && buffer[offset] == 10)
-                    {
-                        //\r\n\r\n
-                        if (newline)
-                        {
-                            offset++;
-                            endof = true;
-                            break;
-                        }
-                        newline = true;
-                    }
-                    if (colon > 0)
-                    {
-                        var name = Encoding.UTF8.GetString(buffer, position, colon - position);
-                        var value = Encoding.UTF8.GetString(buffer, colon + 1, offset - colon - 2).Trim();
-                        this.Headers.SetInternal(name, value);
-                        colon = 0;
-                    }
-                    if (buffer[offset] == 10)
-                    {
-                        offset++;
-                    }
-                    position = offset;
-                }
-                else
-                {
-                    newline = false;
-                }
-            }
-            if (!endof)
-            {
-                //copy a remain bytes to save.
-                var remainBytes = count - position;
-                _beWriteBytes = new byte[remainBytes];
-                Buffer.BlockCopy(buffer, position, _beWriteBytes, 0, remainBytes);
-            }
-            else
-            {
-                _readState = 2;
-            }
-        }
-
-        private void WriteContentBody(byte[] buffer, int offset, int count)
-        {
-            //check whether create a response stream for request.
-            if (_responseStream == null)
-            {
-                var transferEncoding = this.Headers.TransferEncoding;
-                if (!string.IsNullOrEmpty(transferEncoding) && string.CompareOrdinal(transferEncoding, "chunked") == 0)
-                {
-                    _responseStream = new ChunkedStream(new MemoryStream());
-                }
-                else
-                {
-                    var contentLength = this.Headers.ContentLength.HasValue ? this.Headers.ContentLength.Value : 0L;
-                    _responseStream = new ContentLengthStream(new MemoryStream((int)contentLength), contentLength);
-                }
-            }
-            _responseStream.Write(buffer, offset, count);
         }
     }
 }

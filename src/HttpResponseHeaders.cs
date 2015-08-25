@@ -1,17 +1,15 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
     using System;
 
+    // http://en.wikipedia.org/wiki/List_of_HTTP_header_fields
+
     /// <summary>
     ///  Represents the collection of Response Headers.
     /// </summary>
-    /// <remarks>
-    /// http://en.wikipedia.org/wiki/List_of_HTTP_header_fields
-    /// </remarks>
     public sealed class HttpResponseHeaders : HttpHeaders
     {
         /// <summary>
@@ -21,7 +19,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.AcceptRanges];
+                return this[HttpHeaderNames.AcceptRanges];
             }
         }
 
@@ -32,7 +30,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Age];
+                return this[HttpHeaderNames.Age];
             }
         }
 
@@ -44,7 +42,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.CacheControl];
+                return this[HttpHeaderNames.CacheControl];
             }
         }
 
@@ -55,7 +53,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.ContentType];
+                return this[HttpHeaderNames.ContentType];
             }
         }
 
@@ -66,7 +64,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Connection];
+                return this[HttpHeaderNames.Connection];
             }
         }
 
@@ -77,7 +75,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.ContentEncoding];
+                return this[HttpHeaderNames.ContentEncoding];
             }
         }
 
@@ -91,7 +89,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                var content_length = this[KnownHeaderNames.ContentLength];
+                var content_length = this[HttpHeaderNames.ContentLength];
                 if (string.IsNullOrEmpty(content_length))
                 {
                     return null;
@@ -155,7 +153,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                var value = this.GetDateHeaderHelper(KnownHeaderNames.Date);
+                var value = this.GetDateHeaderHelper(HttpHeaderNames.Date);
                 if (value == DateTime.MinValue)
                 {
                     return null;
@@ -171,7 +169,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.ETag];
+                return this[HttpHeaderNames.ETag];
             }
         }
 
@@ -182,7 +180,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                var value = this.GetDateHeaderHelper(this[KnownHeaderNames.Expires]);
+                var value = this.GetDateHeaderHelper(this[HttpHeaderNames.Expires]);
                 if (value == DateTime.MinValue)
                 {
                     return null;
@@ -198,7 +196,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                var value = this.GetDateHeaderHelper(this[KnownHeaderNames.LastModified]);
+                var value = this.GetDateHeaderHelper(this[HttpHeaderNames.LastModified]);
                 if (value == DateTime.MinValue)
                 {
                     return null;
@@ -214,7 +212,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Location];
+                return this[HttpHeaderNames.Location];
             }
         }
 
@@ -225,7 +223,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Pragma];
+                return this[HttpHeaderNames.Pragma];
             }
         }
 
@@ -236,7 +234,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.ProxyAuthenticate];
+                return this[HttpHeaderNames.ProxyAuthenticate];
             }
         }
 
@@ -248,7 +246,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.RetryAfter];
+                return this[HttpHeaderNames.RetryAfter];
             }
         }
 
@@ -259,7 +257,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Server];
+                return this[HttpHeaderNames.Server];
             }
         }
 
@@ -270,7 +268,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.SetCookie];
+                return this[HttpHeaderNames.SetCookie];
             }
         }
 
@@ -282,7 +280,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Trailer];
+                return this[HttpHeaderNames.Trailer];
             }
         }
 
@@ -294,7 +292,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.TransferEncoding];
+                return this[HttpHeaderNames.TransferEncoding];
             }
         }
 
@@ -305,7 +303,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Upgrade];
+                return this[HttpHeaderNames.Upgrade];
             }
         }
 
@@ -317,11 +315,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Vary];
-            }
-            set
-            {
-                this[KnownHeaderNames.Vary] = value;
+                return this[HttpHeaderNames.Vary];
             }
         }
 
@@ -332,7 +326,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Via];
+                return this[HttpHeaderNames.Via];
             }
         }
 
@@ -343,7 +337,7 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.Warning];
+                return this[HttpHeaderNames.Warning];
             }
         }
 
@@ -354,8 +348,13 @@ namespace Yamool.Net.Http
         {
             get
             {
-                return this[KnownHeaderNames.WWWAuthenticate];
+                return this[HttpHeaderNames.WWWAuthenticate];
             }
-        }      
+        }
+
+        public override string ToString()
+        {
+            return this.GetAsString(false, true);
+        }
     }
 }

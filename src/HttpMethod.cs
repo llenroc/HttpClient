@@ -1,154 +1,110 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
     using System;
-    using System.Collections.Generic;
 
     /// <summary>
-    /// The standard http method for http request.
+    ///  The set of common methods for the HTTP request.
     /// </summary>
     public sealed class HttpMethod : IEquatable<HttpMethod>
     {
-        private string _methodName;
-        private VerbOption _verbs;
-
-        [Flags]
-        internal enum VerbOption
-        {
-            RequireContentBody = 0x1,
-            ContentBodyNotAllowed = 0x2,
-            ConnectRequest = 0x4,
-            ExpectNoContentResponse = 0X8
-        }
-
-        static HttpMethod()
-        {
-            Get = new HttpMethod("GET", VerbOption.ContentBodyNotAllowed);
-            Post = new HttpMethod("POST", VerbOption.RequireContentBody);
-            Head = new HttpMethod("HEAD", VerbOption.ContentBodyNotAllowed | VerbOption.ExpectNoContentResponse);
-            Options = new HttpMethod("OPTIONS", VerbOption.ContentBodyNotAllowed | VerbOption.ExpectNoContentResponse);
-        }
-
-        internal HttpMethod(string method, VerbOption verbs)
-        {
-            _methodName = method;
-            _verbs = verbs;
-        }        
+        private string _name;
+        private VerbOptions _options;
 
         /// <summary>
-        /// Represents an HTTP GET protocol method.
+        /// Represents an HTTP GET method.
         /// </summary>
-        public static HttpMethod Get
-        {
-            get;
-            private set;
-        }
+        public readonly static HttpMethod Get = new HttpMethod("GET", VerbOptions.AllowDefaultResponse);
 
         /// <summary>
-        /// Represents an HTTP POST protocol method that is used to post a new entity as an addition to a URI.
+        /// Represents an HTTP POST method.
         /// </summary>
-        public static HttpMethod Post
-        {
-            get;
-            private set;
-        }
+        public readonly static HttpMethod Post = new HttpMethod("POST", VerbOptions.AllowRequestContent | VerbOptions.AllowDefaultResponse);
 
         /// <summary>
-        /// Represents an HTTP HEAD protocol method.
+        /// Represents an HTTP HEAD method.
         /// </summary>
-        public static HttpMethod Head
-        {
-            get;
-            private set;
-        }
+        public readonly static HttpMethod Head = new HttpMethod("HEAD", VerbOptions.AllowResponseHeader);
 
         /// <summary>
-        /// Represents an HTTP OPTIONS protocol method.
+        /// Represents an HTTP PUT method.
         /// </summary>
-        public static HttpMethod Options
-        {
-            get;
-            private set;
-        }
+        public readonly static HttpMethod Put = new HttpMethod("PUT", VerbOptions.AllowRequestContent | VerbOptions.AllowDefaultResponse);
 
         /// <summary>
-        /// An HTTP method.
+        /// Represents an HTTP OPTIONS method.
         /// </summary>
-        public string Method
+        public readonly static HttpMethod Options = new HttpMethod("OPTIONS", VerbOptions.AllowResponseHeader);
+
+        /// <summary>
+        /// Represents an HTTP DELETE method.
+        /// </summary>
+        public readonly static HttpMethod Delete = new HttpMethod("DELETE", VerbOptions.AllowDefaultResponse);
+
+        private HttpMethod(string name, VerbOptions options)
+        {
+            _name = name;
+            _options = options;
+        }
+
+        public string Name
         {
             get
             {
-                return _methodName;
+                return _name;
             }
         }
 
-        internal bool ContentBodyNotAllowed
+        internal bool AllowRequestContent
         {
             get
             {
-                return (_verbs & VerbOption.ContentBodyNotAllowed) == VerbOption.ContentBodyNotAllowed;
+                return (_options & VerbOptions.AllowRequestContent) == VerbOptions.AllowRequestContent;
             }
         }
 
-        internal bool ExpectNoContentResponse
+        internal bool AllowResponseHeader
         {
             get
             {
-                return (_verbs & VerbOption.ExpectNoContentResponse) == VerbOption.ExpectNoContentResponse;
+                return (_options & VerbOptions.AllowResponseHeader) == VerbOptions.AllowResponseHeader;
             }
         }
 
-        internal bool RequireContentBody
+        internal bool AllowResponseContent
         {
             get
             {
-                return (_verbs & VerbOption.RequireContentBody) == VerbOption.RequireContentBody;
+                return (_options & VerbOptions.AllowResponseContent) == VerbOptions.AllowResponseContent;
             }
-        }
-
-        internal bool ConnectRequest
-        {
-            get
-            {
-                return (_verbs & VerbOption.ConnectRequest) == VerbOption.ConnectRequest;
-            }
-        }
-
-        public override string ToString()
-        {
-            return this.Method;
-        }
-
-        public override int GetHashCode()
-        {
-            return this.Method.ToUpperInvariant().GetHashCode();
         }
 
         public bool Equals(HttpMethod other)
         {
-            return other != null && (object.ReferenceEquals(this, other) || string.Compare(this.Method, other.Method, StringComparison.OrdinalIgnoreCase) == 0);
-        }
-
-        public override bool Equals(object obj)
-        {
-            return this.Equals(obj as HttpMethod);
-        }
-
-        public static bool operator ==(HttpMethod left, HttpMethod right)
-        {
-            if (left == null || right == null)
+            if (other == null)
             {
-                return true;
+                return false;
             }
-            return left.Equals(right);
+            return string.Compare(_name, other._name, true) == 0;
         }
 
-        public static bool operator !=(HttpMethod left, HttpMethod right)
+        public override string ToString()
         {
-            return !(left == right);
+            return _name;
         }
-    }       
+
+        [Flags]
+        private enum VerbOptions
+        {
+            AllowRequestContent = 0x1,
+
+            AllowResponseHeader = 0x2,
+
+            AllowResponseContent = 0x4,
+
+            AllowDefaultResponse = AllowResponseHeader | AllowResponseContent
+        }
+    }
 }

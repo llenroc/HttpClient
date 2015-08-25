@@ -1,15 +1,11 @@
-﻿//----------------------------------------------------------------
-// Copyright (c) Yamool Inc.  All rights reserved.
-//----------------------------------------------------------------
+﻿// Copyright (c) 2015 Yamool. All rights reserved.
+// Licensed under the MIT license. See License.txt file in the project root for full license information.
 
 namespace Yamool.Net.Http
 {
     using System;
     using System.Text;
 
-    /// <summary>
-    /// Provides encoding and decoding logic.
-    /// </summary>
     internal class HttpEncoder
     {
         internal static byte[] UrlEncode(byte[] bytes, int offset, int count)
@@ -19,13 +15,13 @@ namespace Yamool.Net.Http
                 return null;
             }
 
-            int cSpaces = 0;//the number of appeared of the space char
-            int cUnsafe = 0;//the number of appeared of the un-safe char.
+            var cSpaces = 0;//the number of appeared of the space char
+            var cUnsafe = 0;//the number of appeared of the un-safe char.
 
             // count them first 
-            for (int i = 0; i < count; i++)
+            for (var i = 0; i < count; i++)
             {
-                char ch = (char)bytes[offset + i];
+                var ch = (char)bytes[offset + i];
 
                 if (ch == ' ')
                     cSpaces++;
@@ -38,13 +34,13 @@ namespace Yamool.Net.Http
                 return bytes;
 
             // expand not 'safe' characters into %XX, spaces to +s
-            byte[] buffer = new byte[count + cUnsafe * 2];
-            int pos = 0;
+            var buffer = new byte[count + cUnsafe * 2];
+            var pos = 0;
 
-            for (int i = 0; i < count; i++)
+            for (var i = 0; i < count; i++)
             {
-                byte b = bytes[offset + i];
-                char ch = (char)b;
+                var b = bytes[offset + i];
+                var ch = (char)b;
 
                 if (HttpEncoderUtility.IsUrlSafeChar(ch))
                 {
@@ -72,14 +68,14 @@ namespace Yamool.Net.Http
                 return null;
             }
 
-            int count = value.Length;
-            UrlDecoder enncoder = new UrlDecoder(count, encoding);
+            var count = value.Length;
+            var enncoder = new UrlDecoder(count, encoding);
             // go through the string's chars collapsing %XX and %uXXXX and
             // appending each char as char, with exception of %XX constructs 
             // that are appended as bytes
-            for (int i = 0; i < count; i++)
+            for (var i = 0; i < count; i++)
             {
-                char ch = value[i];
+                var ch = value[i];
 
                 if (ch == '+')
                 {
@@ -89,10 +85,10 @@ namespace Yamool.Net.Http
                 {
                     if (value[i + 1] == 'u' && i < count - 5)
                     {
-                        int h1 = HttpEncoderUtility.HexToInt(value[i + 2]);
-                        int h2 = HttpEncoderUtility.HexToInt(value[i + 3]);
-                        int h3 = HttpEncoderUtility.HexToInt(value[i + 4]);
-                        int h4 = HttpEncoderUtility.HexToInt(value[i + 5]);
+                        var h1 = HttpEncoderUtility.HexToInt(value[i + 2]);
+                        var h2 = HttpEncoderUtility.HexToInt(value[i + 3]);
+                        var h3 = HttpEncoderUtility.HexToInt(value[i + 4]);
+                        var h4 = HttpEncoderUtility.HexToInt(value[i + 5]);
 
                         if (h1 >= 0 && h2 >= 0 && h3 >= 0 && h4 >= 0)
                         {   // valid 4 hex chars
@@ -106,8 +102,8 @@ namespace Yamool.Net.Http
                     }
                     else
                     {
-                        int h1 = HttpEncoderUtility.HexToInt(value[i + 1]);
-                        int h2 = HttpEncoderUtility.HexToInt(value[i + 2]);
+                        var h1 = HttpEncoderUtility.HexToInt(value[i + 1]);
+                        var h2 = HttpEncoderUtility.HexToInt(value[i + 2]);
 
                         if (h1 >= 0 && h2 >= 0)
                         {     // valid 2 hex chars 
@@ -150,7 +146,6 @@ namespace Yamool.Net.Http
             return true;
         }
 
-        //This class from the microsft .net library source code.
         private class UrlDecoder
         {
             private int _bufferSize;
@@ -162,100 +157,100 @@ namespace Yamool.Net.Http
 
             internal UrlDecoder(int bufferSize, Encoding encoding)
             {
-                this._bufferSize = bufferSize;
-                this._encoding = encoding;
-                this._charBuffer = new char[bufferSize];
+                _bufferSize = bufferSize;
+                _encoding = encoding;
+                _charBuffer = new char[bufferSize];
             }
 
             internal void AddByte(byte b)
             {
-                if (this._byteBuffer == null)
+                if (_byteBuffer == null)
                 {
-                    this._byteBuffer = new byte[this._bufferSize];
+                    _byteBuffer = new byte[_bufferSize];
                 }
-                this._byteBuffer[this._numBytes++] = b;
+                this._byteBuffer[_numBytes++] = b;
             }
 
             internal void AddChar(char ch)
             {
-                if (this._numBytes > 0)
+                if (_numBytes > 0)
                 {
                     this.FlushBytes();
                 }
-                this._charBuffer[this._numChars++] = ch;
+                _charBuffer[this._numChars++] = ch;
             }
 
             private void FlushBytes()
             {
-                if (this._numBytes > 0)
+                if (_numBytes > 0)
                 {
-                    this._numChars += this._encoding.GetChars(this._byteBuffer, 0, this._numBytes, this._charBuffer, this._numChars);
-                    this._numBytes = 0;
+                    _numChars += this._encoding.GetChars(_byteBuffer, 0, _numBytes, _charBuffer, _numChars);
+                    _numBytes = 0;
                 }
             }
 
             internal string GetString()
             {
-                if (this._numBytes > 0)
+                if (_numBytes > 0)
                 {
-                    this.FlushBytes();
+                    FlushBytes();
                 }
-                if (this._numChars > 0)
+                if (_numChars > 0)
                 {
-                    return new string(this._charBuffer, 0, this._numChars);
+                    return new string(_charBuffer, 0, _numChars);
                 }
                 return string.Empty;
             }
         }
-    }
 
-    internal static class HttpEncoderUtility
-    {
-        public static bool IsUrlSafeChar(char ch)
+        private static class HttpEncoderUtility
         {
-            if ((((ch >= 'a') && (ch <= 'z')) || ((ch >= 'A') && (ch <= 'Z'))) || ((ch >= '0') && (ch <= '9')))
+            public static bool IsUrlSafeChar(char ch)
             {
-                return true;
-            }
-            switch (ch)
-            {
-                case '(':
-                case ')':
-                case '*':
-                case '-':
-                case '.':
-                case '_':
-                case '!':
+                if ((((ch >= 'a') && (ch <= 'z')) || ((ch >= 'A') && (ch <= 'Z'))) || ((ch >= '0') && (ch <= '9')))
+                {
                     return true;
+                }
+                switch (ch)
+                {
+                    case '(':
+                    case ')':
+                    case '*':
+                    case '-':
+                    case '.':
+                    case '_':
+                    case '!':
+                        return true;
+                }
+                return false;
             }
-            return false;
-        }
 
-        public static char IntToHex(int n)
-        {
-            if (n <= 9)
+            public static char IntToHex(int n)
             {
-                //0-9
-                return (char)(n + 0x30);//0x30=48
+                if (n <= 9)
+                {
+                    //0-9
+                    return (char)(n + 0x30);//0x30=48
+                }
+                return (char)((n - 10) + 0x61);//0x61=97
             }
-            return (char)((n - 10) + 0x61);//0x61=97
-        }
 
-        public static int HexToInt(char h)
-        {
-            if ((h >= '0') && (h <= '9'))
+            public static int HexToInt(char h)
             {
-                return (h - '0');
+                if ((h >= '0') && (h <= '9'))
+                {
+                    return (h - '0');
+                }
+                if ((h >= 'a') && (h <= 'f'))
+                {
+                    return ((h - 'a') + 10);
+                }
+                if ((h >= 'A') && (h <= 'F'))
+                {
+                    return ((h - 'A') + 10);
+                }
+                return -1;
             }
-            if ((h >= 'a') && (h <= 'f'))
-            {
-                return ((h - 'a') + 10);
-            }
-            if ((h >= 'A') && (h <= 'F'))
-            {
-                return ((h - 'A') + 10);
-            }
-            return -1;
         }
-    }
+    }   
 }

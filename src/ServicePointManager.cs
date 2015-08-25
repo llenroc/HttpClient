@@ -12,7 +12,7 @@ namespace Yamool.Net.Http
     public static class ServicePointManager
     {
         private static ConcurrentDictionary<string, Lazy<ServicePoint>> _servicePoints = new ConcurrentDictionary<string, Lazy<ServicePoint>>();
-        private static int _defaultConnectionLimit = 100;
+        private static int _defaultConnectionLimit = 1024;
         private static int _maxServicePointIdleTime = 100000;
         private static int _dnsRefreshTimeout = 120000;
         private static bool _usednsRoundRobin;

@@ -621,14 +621,18 @@ namespace Yamool.Net.Http
                 else
                 {
                     buffer_length = connection.Buffer.Length;
-                    buffer_offset = connection.Buffer.Offset;
+                    buffer_offset = connection.Buffer.Offset;                    
                 }
             }
-            if (!requestDone)
+            //if (!requestDone)
+            //{
+            //    throw new HttpRequestException("The request not finished.");
+            //}
+            if (_cookieContainer != null)
             {
-                throw new HttpRequestException("The request not finished.");
+                _cookieContainer.SetCookies(_uri, _responseHeaders.SetCookie);
             }
-            if (this.Redirect((HttpStatusCode)_statusLineValues.StatusCode))
+            if (this.CheckRedirect((HttpStatusCode)_statusLineValues.StatusCode))
             {               
                 if (_redirectedToDifferentHost)
                 {
@@ -951,7 +955,7 @@ namespace Yamool.Net.Http
             }
         }
 
-        private bool Redirect(HttpStatusCode code)
+        private bool CheckRedirect(HttpStatusCode code)
         {
             if (code == HttpStatusCode.MultipleChoices || // 300
                 code == HttpStatusCode.MovedPermanently || // 301
@@ -1152,16 +1156,17 @@ namespace Yamool.Net.Http
             var writeBytesCount = requestHeadersString.Length + requestLine.Length + RequestLineConstantSize;
             byte[] writeBuffer = null;
             var usePooledBuffer = false;
+            var offset = 0;
             if (connection.Buffer.Length >= writeBytesCount)
             {
                 writeBuffer = connection.Buffer.Array;
+                offset = connection.Buffer.Offset;
                 usePooledBuffer = true;
             }
             else
             {
                 writeBuffer = new byte[writeBytesCount];
-            }
-            var offset = 0;
+            }           
             offset += Encoding.ASCII.GetBytes(requestLine, 0, requestLine.Length, writeBuffer, offset);
             Buffer.BlockCopy(HttpBytes, 0, writeBuffer, offset, HttpBytes.Length);
             offset += HttpBytes.Length;
@@ -1174,7 +1179,7 @@ namespace Yamool.Net.Http
             offset += requestHeadersString.Length;
             //transfer data
             var beginReadIndex = 0;
-            var leftWriteBytes = offset;
+            var leftWriteBytes = writeBytesCount;
             while (leftWriteBytes > 0)
             {
                 var count = Math.Min(writeBytesCount - beginReadIndex, connection.Buffer.Length);

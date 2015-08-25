@@ -10,7 +10,7 @@ namespace Yamool.Net.Http
     internal class BufferPool
     {
         public const int DefaultBufferLength = 4096;
-        private static Lazy<BufferPool> defaultBufferPool = new Lazy<BufferPool>(() => new BufferPool(1));
+        private static Lazy<BufferPool> defaultBufferPool = new Lazy<BufferPool>(() => new BufferPool(1024));
 
         private byte[] _largeBuffer;
         private ConcurrentStack<PooledBuffer> _queues = new ConcurrentStack<PooledBuffer>();

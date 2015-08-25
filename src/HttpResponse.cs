@@ -265,6 +265,7 @@ namespace Yamool.Net.Http
             if (disposing && !_disposed)
             {
                 _disposed = true;
+                //we should check a `connection` value of response headers
                 _connectStream.Dispose();
             }
         }

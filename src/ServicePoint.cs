@@ -34,6 +34,7 @@ namespace Yamool.Net.Http
         private List<Connection> _connections;
         private Timer _idleTimer;
         private int _currentConnections;
+        private bool _isSecured;
 
         internal ServicePoint(Uri uri, int connectionLimit, string lookupString, bool usesProxy)
         {
@@ -49,6 +50,7 @@ namespace Yamool.Net.Http
             _idleSince = DateTime.Now;
             _dnsHelper = new DnsResolverHelper(uri);
             _connections = new List<Connection>(DefaultConnectionListSize);
+            _isSecured = _uri.Scheme == Uri.UriSchemeHttps;
         }
 
         /// <summary>
@@ -129,6 +131,15 @@ namespace Yamool.Net.Http
             get
             {
                 return _idleSince;
+            }
+        }
+
+
+        internal bool IsSecured
+        {
+            get
+            {
+                return _isSecured;
             }
         }
 

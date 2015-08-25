@@ -12,6 +12,7 @@ namespace Yamool.Net.Http.Tests
     {
         static void Main()
         {
+            ServicePointManager.EnableDnsRoundRobin = true;
             Task.Factory.StartNew(() => Test());       
             Console.ReadLine();
         }
@@ -20,8 +21,7 @@ namespace Yamool.Net.Http.Tests
         {
             var watcher = new System.Diagnostics.Stopwatch();
             watcher.Start();
-            var request = new HttpRequest(new Uri("http://www.baidu.com/"));
-            request.KeepAlive = true;
+            var request = new HttpRequest(new Uri("https://www.baidu.com/"));
             request.CookieContainer = new CookieContainer();
             var response = await request.SendAsync();
             var sum = 0;
@@ -29,17 +29,15 @@ namespace Yamool.Net.Http.Tests
             {
                 var buffer = new byte[4096];
                 var count = 0;
-                while ((count =await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                while ((count = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                 {
                     sum += count;
                     //Console.WriteLine(count);
                 }
             }
-            watcher.Stop();
             Console.WriteLine("#1 total " + sum + " bytes");
-
             Console.WriteLine("elapsed[1]:" + watcher.Elapsed.TotalMilliseconds + "'ms");
-
+            watcher.Stop();
             Test2();
         }
 
@@ -47,7 +45,7 @@ namespace Yamool.Net.Http.Tests
         {
             var watcher = new System.Diagnostics.Stopwatch();
             watcher.Start();
-            var request = new HttpRequest(new Uri("http://www.baidu.com/"));
+            var request = new HttpRequest(new Uri("https://www.baidu.com/"));
             request.KeepAlive = true;
             request.CookieContainer = new CookieContainer();
             using (var response = await request.SendAsync())

@@ -9,12 +9,15 @@ namespace Yamool.Net.Http
     using System.Threading;
     using System.Threading.Tasks;
     using System.Runtime.CompilerServices;
+    using System.Net.Security;
+    using System.Security.Authentication;
+    using System.Security.Cryptography.X509Certificates;
 
     /// <summary>
     /// Represents a HTTP connection for HTTP transport. 
     /// </summary>
     internal sealed class Connection
-    {
+    {    
         private readonly ServicePoint _servicePoint;
         private readonly PooledBuffer _buffer;
         private readonly Saea _saea;
@@ -32,8 +35,16 @@ namespace Yamool.Net.Http
             _buffer = BufferPool.Default.GetBuffer();
             _socket = new Socket(servicePoint.HostEndPoint.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
             _socket.NoDelay = !servicePoint.UseNagleAlgorithm;
-            _asyncReadWrite = new AsyncReadWrite(_socket, _saea);
 
+            if (_servicePoint.IsSecured)
+            {
+                _asyncReadWrite = new SslAsyncReadWrite(servicePoint.Address.Host, _socket, _saea, servicePoint.ClientCertificate, ValidateServerCertificate);
+            }
+            else
+            {
+                _asyncReadWrite = new AsyncReadWrite(_socket, _saea);
+            }
+            
         }
 
         public bool Busy
@@ -89,16 +100,16 @@ namespace Yamool.Net.Http
                 _servicePoint.ReleaseConnection(this);
                 _saea.Free();
                 _buffer.Dispose();
-                Socket s = _socket;
                 try
                 {
-                    s.Shutdown(SocketShutdown.Both);
+                    _socket.Shutdown(SocketShutdown.Both);
                 }
                 catch { }
                 finally
                 {
-                    s.Close();
+                    _socket.Close();
                 }
+                _asyncReadWrite.Dispose();
             }
         }
 
@@ -106,6 +117,10 @@ namespace Yamool.Net.Http
         {
             _saea.SetBuffer(0, 0);            
             await _asyncReadWrite.Connect(_servicePoint.HostEndPoint);
+            if (_servicePoint.IsSecured)
+            {
+                await _asyncReadWrite.Authenticate();
+            }
             return true;
         }
 
@@ -120,25 +135,27 @@ namespace Yamool.Net.Http
             {
                 throw new ArgumentOutOfRangeException("offset");
             }
-            if (count < 0 || offset + count > _buffer.Length)
+            if (count < 0 || count > _buffer.Length)
             {
                 throw new ArgumentOutOfRangeException("count");
             }
             _saea.SetBuffer(_buffer.Array, offset, count);
-            await _asyncReadWrite.Read();
-            return new ArraySegment<byte>(_buffer.Array, _buffer.Offset, (_saea.Offset - _buffer.Offset) + _saea.BytesTransferred);
+            await _asyncReadWrite.ReadAsync();
+            return new ArraySegment<byte>(_buffer.Array, _buffer.Offset, (_saea.Offset - _buffer.Offset) + _asyncReadWrite.BytesTransferred);
         }
 
         internal int Read(byte[] buffer, int offset, int count)
-        {
-            return _socket.Receive(buffer, offset, count, SocketFlags.None);
+        {            
+           // return _socket.Receive(buffer, offset, count, SocketFlags.None);
+            _saea.SetBuffer(buffer, offset, count);
+            return _asyncReadWrite.Read();
         }
 
         internal async Task<int> ReadAsync(byte[] buffer, int offset, int count)
         {
             _saea.SetBuffer(buffer, offset, count);
-            await _asyncReadWrite.Read();
-            return _saea.BytesTransferred;
+            await _asyncReadWrite.ReadAsync();
+            return _asyncReadWrite.BytesTransferred;
         }
 
         internal async Task<int> WritePooledBufferAsync(int offset, int count)
@@ -147,13 +164,13 @@ namespace Yamool.Net.Http
             {
                 throw new ArgumentOutOfRangeException("offset");
             }
-            if (count < 0 || offset + count > _buffer.Length)
+            if (count < 0 || count > _buffer.Length)
             {
                 throw new ArgumentOutOfRangeException("count");
             }
             _saea.SetBuffer(_buffer.Array, offset, count);
-            await _asyncReadWrite.Write();
-            return _saea.BytesTransferred;
+            await _asyncReadWrite.WriteAsync();
+            return _asyncReadWrite.BytesTransferred;
         }
 
         internal bool SubmitRequest(HttpRequest request)
@@ -170,14 +187,105 @@ namespace Yamool.Net.Http
             }
             return false;
         }
-        
-        private class AsyncReadWrite : INotifyCompletion
+
+        private static bool ValidateServerCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
         {
-            private static readonly Action Sentinal = () => { };
-            private Action _continuation;
-            private readonly Saea _saea;
-            private bool _completed;
-            private Socket _socket;
+            return true;
+        }
+
+        private class SslAsyncReadWrite : AsyncReadWrite
+        {
+            private SslStream _sslStream;
+            private string _host;
+            private RemoteCertificateValidationCallback _userCertificateValidationCallback;
+            private X509CertificateCollection _clientCertificates;
+            private int _bytesTransferred;
+            private bool _authenticated;
+            public SslAsyncReadWrite(string host, Socket socket, Saea saea, X509Certificate clientCertificate, RemoteCertificateValidationCallback userCertificateValidationCallback)
+                : base(socket, saea)
+            {
+                _host = host;
+                _userCertificateValidationCallback = userCertificateValidationCallback;
+                if (clientCertificate != null)
+                {
+                    _clientCertificates = new X509CertificateCollection(new X509Certificate[] { clientCertificate });
+                }               
+            }
+
+            public override int BytesTransferred
+            {
+                get
+                {
+                    return _bytesTransferred;
+                }
+            }
+
+            public override async Task<bool> Authenticate()
+            {
+                if (_authenticated)
+                {
+                    return true;
+                }
+                _sslStream = new SslStream(new NetworkStream(_socket), false, _userCertificateValidationCallback);
+                await _sslStream.AuthenticateAsClientAsync(_host, _clientCertificates, SslProtocols.Default, false);
+                _authenticated = true;
+                return _authenticated;
+            }
+
+            public override int Read()
+            {
+                return _sslStream.Read(_saea.Buffer, _saea.Offset, _saea.Count);
+            }
+
+            public override AsyncReadWrite ReadAsync()
+            {
+                this.Reset();
+                _sslStream.ReadAsync(_saea.Buffer, _saea.Offset, _saea.Count).ContinueWith(task =>
+                {
+                    _bytesTransferred = task.Result;
+                    _completed = true;
+                    var previous = _continuation ?? Interlocked.CompareExchange(ref _continuation, Sentinal, null);
+                    if (previous != null)
+                    {
+                        previous();
+                    }
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                return this;
+            }
+
+            public override AsyncReadWrite WriteAsync()
+            {
+                this.Reset();
+                _sslStream.WriteAsync(_saea.Buffer, _saea.Offset, _saea.Count).ContinueWith(task =>
+                {
+                    _bytesTransferred = _saea.Count;
+                    _completed = true;
+                    var previous = _continuation ?? Interlocked.CompareExchange(ref _continuation, Sentinal, null);
+                    if (previous != null)
+                    {
+                        previous();
+                    }
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                return this;
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _sslStream.Close();
+                }
+                base.Dispose(disposing);
+            }         
+        }
+
+        private class AsyncReadWrite : INotifyCompletion, IDisposable
+        {
+            protected static readonly Action Sentinal = () => { };
+            protected Action _continuation;
+            protected readonly Saea _saea;
+            protected bool _completed;
+            protected readonly Socket _socket;
 
             public AsyncReadWrite(Socket socket, Saea saea)
             {
@@ -185,6 +293,7 @@ namespace Yamool.Net.Http
                 _saea = saea;
                 _saea.OnCompleted(_ =>
                 {
+                    _completed = true;
                     var previous = _continuation ?? Interlocked.CompareExchange(ref _continuation, Sentinal, null);
                     if (previous != null)
                     {
@@ -201,13 +310,27 @@ namespace Yamool.Net.Http
                 }
             }
 
+            public virtual int BytesTransferred
+            {
+                get
+                {
+                    return _saea.BytesTransferred;
+                }
+            }
+
             private bool CanReuse
             {
                 get
                 {
-                   return _socket.Connected && 
-                       !(_socket.Poll(1, SelectMode.SelectRead) && _socket.Available == 0);
+                    return _socket.Connected &&
+                        !(_socket.Poll(1, SelectMode.SelectRead) && _socket.Available == 0);
                 }
+            }
+
+            public void Dispose()
+            {
+                this.Dispose(true);
+                GC.SuppressFinalize(this);
             }
 
             public void GetResult()
@@ -223,7 +346,7 @@ namespace Yamool.Net.Http
                 return this;
             }
 
-            public AsyncReadWrite Connect(EndPoint remoteEP)
+            public virtual AsyncReadWrite Connect(EndPoint remoteEP)
             {
                 this.Reset();
                 _saea.RemoteEndPoint = remoteEP;
@@ -234,7 +357,17 @@ namespace Yamool.Net.Http
                 return this;
             }
 
-            public AsyncReadWrite Read()
+            public virtual Task<bool> Authenticate()
+            {
+                return Task.FromResult(true);
+            }
+
+            public virtual int Read()
+            {
+                return _socket.Receive(_saea.Buffer, _saea.Offset, _saea.Count, SocketFlags.None);
+            }
+
+            public virtual AsyncReadWrite ReadAsync()
             {
                 this.Reset();
                 if (!_socket.ReceiveAsync(_saea))
@@ -244,7 +377,7 @@ namespace Yamool.Net.Http
                 return this;
             }
 
-            public AsyncReadWrite Write()
+            public virtual AsyncReadWrite WriteAsync()
             {
                 this.Reset();
                 if (!_socket.SendAsync(_saea))
@@ -258,11 +391,20 @@ namespace Yamool.Net.Http
             {
                 if (_continuation == Sentinal || Interlocked.CompareExchange(ref _continuation, continuation, null) == Sentinal)
                 {
-                    Task.Run(continuation);
+                    //Task.Run(continuation);
+                    continuation();
                 }
             }
 
-            private void Reset()
+            protected virtual void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _saea.Free();
+                }
+            }
+
+            protected void Reset()
             {
                 _completed = false;
                 _continuation = null;

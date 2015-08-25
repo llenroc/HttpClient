@@ -43,7 +43,7 @@ namespace Yamool.Net.Http
                     _lastUpdateTime = DateTime.Now;
                 }
                 var index = ServicePointManager.EnableDnsRoundRobin ? ((uint)_index++ % _host.AddressList.Length) : _index;
-                return new IPEndPoint(_host.AddressList[index], _uri.Port);
+                return new IPEndPoint(_host.AddressList[index], _uri.Scheme == Uri.UriSchemeHttps ? (_uri.IsDefaultPort ? 443 : _uri.Port) : _uri.Port);
             }
         }
     }

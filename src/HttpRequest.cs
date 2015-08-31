@@ -1195,7 +1195,7 @@ namespace Yamool.Net.Http
             {
                 using (_submitContent)
                 {
-                    await _submitContent.CopyToAsync(null);
+                    await _submitContent.CopyToAsync(new ConnectStream(connection, this));
                     _submitContent = null;
                 }
             }

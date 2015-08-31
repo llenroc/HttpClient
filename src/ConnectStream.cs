@@ -25,6 +25,12 @@ namespace Yamool.Net.Http
         private ChunkParser _chunkParser;
         private PooledBuffer _pooledBuffer;
 
+        internal ConnectStream(Connection connection, HttpRequest request)
+        {
+            _connection = connection;
+            _request = request;
+        }
+
         internal ConnectStream(Connection connection, ArraySegment<byte> buffer, int offset, int bufferCount, long readCount, bool chunked, HttpRequest request)
         {
             _connection = connection;

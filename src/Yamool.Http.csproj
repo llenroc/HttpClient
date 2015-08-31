@@ -43,10 +43,13 @@
     <Compile Include="ArraySegmentExtensions.cs" />
     <Compile Include="AsyncHelpers.cs" />
     <Compile Include="BufferPool.cs" />
+    <Compile Include="ByteArrayContent.cs" />
     <Compile Include="ChunkParser.cs" />
     <Compile Include="Connection.cs" />
     <Compile Include="ConnectStream.cs" />
     <Compile Include="DnsResolverHelper.cs" />
+    <Compile Include="Headers\HttpContentHeaders.cs" />
+    <Compile Include="Headers\MediaTypeHeaderValue.cs" />
     <Compile Include="HttpResponseData.cs" />
     <Compile Include="HttpContent.cs" />
     <Compile Include="HttpExceptions.cs" />
@@ -68,6 +71,7 @@
     <Compile Include="SaeaPool.cs" />
     <Compile Include="ServicePoint.cs" />
     <Compile Include="ServicePointManager.cs" />
+    <Compile Include="StringContent.cs" />
     <Compile Include="StringEscapeUtils.cs" />
   </ItemGroup>
   <ItemGroup />

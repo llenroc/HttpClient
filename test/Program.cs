@@ -12,8 +12,8 @@ namespace Yamool.Net.Http.Tests
     {
         static void Main()
         {
-            ServicePointManager.EnableDnsRoundRobin = true;
-            Task.Factory.StartNew(() => Test());       
+            var request = new HttpRequest(HttpMethod.Post, new Uri("http://localhost/traffic/token"));
+
             Console.ReadLine();
         }
 
